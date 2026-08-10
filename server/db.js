@@ -67,8 +67,8 @@ try {
         )
       `, async (err) => {
         if (!err) {
-          db.get(`SELECT COUNT(*) as count FROM admins`, [], async (err, row) => {
-            if (!err && row && row.count === 0) {
+          db.get(`SELECT * FROM admins WHERE username = 'admin'`, [], async (err, row) => {
+            if (!err && !row) {
               db.run(`INSERT INTO admins (id, username, password_hash) VALUES ('admin_default', 'admin', ?)`, [defaultPasswordHash]);
             }
           });
@@ -161,6 +161,13 @@ const dbAsync = {
       });
     } else if (query.startsWith('DELETE FROM projects')) {
       fallbackStore.projects = fallbackStore.projects.filter(p => p.id !== params[0]);
+    } else if (query.startsWith('UPDATE projects SET')) {
+      const project = fallbackStore.projects.find(p => p.id === params[3]);
+      if (project) {
+        project.title = params[0];
+        project.description = params[1];
+        project.board_type = params[2];
+      }
     } else if (query.startsWith('UPDATE admins SET password_hash')) {
       const admin = fallbackStore.admins.find(a => a.id === params[1]);
       if (admin) admin.password_hash = params[0];

@@ -1,17 +1,20 @@
 /**
  * Main Application Client Logic
- * Handles API requests, Web Serial port connections, Admin Authentication, UI state, and flasher dispatch
+ * Handles API requests, Web Serial port connections, Admin Authentication, Project Editing, Web Serial Monitor, and Flasher dispatching
  */
 
 document.addEventListener('DOMContentLoaded', () => {
-  // DOM Elements
+  // Navigation & View Elements
   const tabUserBtn = document.getElementById('tab-user');
+  const tabMonitorBtn = document.getElementById('tab-monitor');
   const tabAdminBtn = document.getElementById('tab-admin');
+  
   const viewUser = document.getElementById('view-user');
+  const viewMonitor = document.getElementById('view-monitor');
   const viewAdmin = document.getElementById('view-admin');
   const serialStatusBadge = document.getElementById('serial-status-badge');
 
-  // User View Elements
+  // User Catalog View Elements
   const searchInput = document.getElementById('search-input');
   const boardFilterSelect = document.getElementById('board-filter-select');
   const projectGrid = document.getElementById('project-grid');
@@ -31,6 +34,18 @@ document.addEventListener('DOMContentLoaded', () => {
   const flashProgressText = document.getElementById('flash-progress-text');
   const flashTerminal = document.getElementById('flash-terminal');
   const btnClearTerminal = document.getElementById('btn-clear-terminal');
+
+  // Serial Monitor Elements
+  const monBtnConnect = document.getElementById('mon-btn-connect');
+  const monBtnDisconnect = document.getElementById('mon-btn-disconnect');
+  const monPortLabel = document.getElementById('mon-port-label');
+  const monSelectBaud = document.getElementById('mon-select-baud');
+  const monTerminalBody = document.getElementById('mon-terminal-body');
+  const monAutoscrollChk = document.getElementById('mon-autoscroll-chk');
+  const monBtnClear = document.getElementById('mon-btn-clear');
+  const monInputText = document.getElementById('mon-input-text');
+  const monSelectLineEnding = document.getElementById('mon-select-line-ending');
+  const monBtnSend = document.getElementById('mon-btn-send');
 
   // Admin Auth & Panel Elements
   const adminLoginCard = document.getElementById('admin-login-card');
@@ -52,6 +67,15 @@ document.addEventListener('DOMContentLoaded', () => {
   const passConfirmInput = document.getElementById('pass-confirm');
   const changePassAlert = document.getElementById('change-pass-alert');
 
+  const editProjectModal = document.getElementById('edit-project-modal');
+  const editModalCloseBtn = document.getElementById('edit-modal-close-btn');
+  const editProjectForm = document.getElementById('edit-project-form');
+  const editProjectIdInput = document.getElementById('edit-project-id');
+  const editTitleInput = document.getElementById('edit-title');
+  const editDescInput = document.getElementById('edit-desc');
+  const editBoardSelect = document.getElementById('edit-board');
+  const editProjectAlert = document.getElementById('edit-project-alert');
+
   const uploadForm = document.getElementById('upload-form');
   const uploadTitleInput = document.getElementById('upload-title');
   const uploadDescInput = document.getElementById('upload-desc');
@@ -61,7 +85,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const adminTerminal = document.getElementById('admin-terminal');
   const adminProjectsList = document.getElementById('admin-projects-list');
 
-  // App State
+  // App State Variables
   let projectsList = [];
   let selectedProject = null;
   let currentSerialPort = null;
@@ -69,25 +93,34 @@ document.addEventListener('DOMContentLoaded', () => {
   let adminToken = localStorage.getItem('adminToken') || null;
   let adminUsername = localStorage.getItem('adminUsername') || null;
 
+  // Serial Monitor State Variables
+  let monPort = null;
+  let monReader = null;
+  let monKeepReading = false;
+  let monClosedPromise = null;
+
   // Check Web Serial API Support
   checkWebSerialSupport();
 
-  // Navigation Tab Handlers
+  // Navigation Tab Event Listeners
   tabUserBtn.addEventListener('click', () => switchTab('user'));
+  if (tabMonitorBtn) tabMonitorBtn.addEventListener('click', () => switchTab('monitor'));
   tabAdminBtn.addEventListener('click', () => switchTab('admin'));
 
   function switchTab(tab) {
+    [tabUserBtn, tabMonitorBtn, tabAdminBtn].forEach(btn => btn && btn.classList.remove('active'));
+    [viewUser, viewMonitor, viewAdmin].forEach(view => view && view.classList.add('hidden'));
+
     if (tab === 'user') {
       tabUserBtn.classList.add('active');
-      tabAdminBtn.classList.remove('active');
       viewUser.classList.remove('hidden');
-      viewAdmin.classList.add('hidden');
       fetchProjects();
+    } else if (tab === 'monitor') {
+      tabMonitorBtn.classList.add('active');
+      viewMonitor.classList.remove('hidden');
     } else {
       tabAdminBtn.classList.add('active');
-      tabUserBtn.classList.remove('active');
       viewAdmin.classList.remove('hidden');
-      viewUser.classList.add('hidden');
       checkAdminSession();
     }
   }
@@ -127,7 +160,7 @@ document.addEventListener('DOMContentLoaded', () => {
         showLoginView();
       }
     } catch (_) {
-      showDashboardView(); // Graceful fallback if offline
+      showDashboardView();
     }
   }
 
@@ -152,7 +185,6 @@ document.addEventListener('DOMContentLoaded', () => {
     localStorage.removeItem('adminUsername');
   }
 
-  // Login Form Submission
   adminLoginForm.addEventListener('submit', async (e) => {
     e.preventDefault();
     const username = loginUsernameInput.value.trim();
@@ -189,7 +221,6 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  // Logout Handler
   btnAdminLogout.addEventListener('click', () => {
     clearAdminToken();
     showLoginView();
@@ -252,6 +283,65 @@ document.addEventListener('DOMContentLoaded', () => {
       changePassAlert.className = 'alert-box error';
       changePassAlert.textContent = 'Error: ' + err.message;
       changePassAlert.classList.remove('hidden');
+    }
+  });
+
+  // Edit Project Modal Handlers
+  editModalCloseBtn.addEventListener('click', () => {
+    editProjectModal.classList.add('hidden');
+  });
+
+  function openEditProjectModal(project) {
+    editProjectIdInput.value = project.id;
+    editTitleInput.value = project.title;
+    editDescInput.value = project.description;
+    editBoardSelect.value = project.board_type;
+    editProjectAlert.classList.add('hidden');
+    editProjectModal.classList.remove('hidden');
+  }
+
+  editProjectForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const id = editProjectIdInput.value;
+    const title = editTitleInput.value.trim();
+    const description = editDescInput.value.trim();
+    const board_type = editBoardSelect.value;
+
+    editProjectAlert.classList.add('hidden');
+
+    try {
+      const res = await fetch(`/api/admin/projects/${id}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${adminToken}`
+        },
+        body: JSON.stringify({ title, description, board_type })
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        editProjectAlert.className = 'alert-box error';
+        editProjectAlert.textContent = data.error || 'Failed to update project.';
+        editProjectAlert.classList.remove('hidden');
+        return;
+      }
+
+      editProjectAlert.className = 'alert-box success';
+      editProjectAlert.textContent = '🎉 Project updated successfully!';
+      editProjectAlert.classList.remove('hidden');
+
+      setTimeout(() => {
+        editProjectModal.classList.add('hidden');
+        fetchProjectsAdmin();
+        fetchProjects();
+      }, 1200);
+
+    } catch (err) {
+      editProjectAlert.className = 'alert-box error';
+      editProjectAlert.textContent = 'Error: ' + err.message;
+      editProjectAlert.classList.remove('hidden');
     }
   });
 
@@ -347,12 +437,7 @@ document.addEventListener('DOMContentLoaded', () => {
     modalProjectBoard.className = `board-pill ${getBoardBadgeClass(selectedProject.board_type)}`;
     modalProjectDesc.textContent = selectedProject.description;
 
-    if (selectedProject.board_type.includes('uno')) {
-      selectBaudRate.value = '115200';
-    } else {
-      selectBaudRate.value = '115200';
-    }
-
+    selectBaudRate.value = '115200';
     resetFlasherUI();
     flashModal.classList.remove('hidden');
   }
@@ -468,6 +553,158 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   // ==========================================
+  // WEB SERIAL MONITOR CONTROLLER
+  // ==========================================
+
+  monBtnConnect.addEventListener('click', async () => {
+    if (!('serial' in navigator)) {
+      alert('Web Serial API is not supported in this browser.');
+      return;
+    }
+
+    try {
+      monPort = await navigator.serial.requestPort();
+      const baudRate = parseInt(monSelectBaud.value, 10);
+      await monPort.open({ baudRate });
+
+      const info = monPort.getInfo();
+      const portText = info.usbVendorId ? `USB Device (VID: 0x${info.usbVendorId.toString(16).padStart(4, '0')})` : 'Connected COM Port';
+      
+      monPortLabel.textContent = `🟢 ${portText} @ ${baudRate} Baud`;
+      monPortLabel.classList.add('connected');
+
+      monBtnConnect.classList.add('hidden');
+      monBtnDisconnect.classList.remove('hidden');
+      monInputText.disabled = false;
+      monBtnSend.disabled = false;
+
+      logToSerialTerminal('success', `🔌 Connected to ${portText} at ${baudRate} baud.`);
+
+      monKeepReading = true;
+      readSerialStream();
+
+    } catch (err) {
+      if (err.name !== 'NotFoundError') {
+        logToSerialTerminal('error', `Serial Connection Error: ${err.message}`);
+      }
+    }
+  });
+
+  monBtnDisconnect.addEventListener('click', async () => {
+    await disconnectSerialMonitor();
+  });
+
+  async function disconnectSerialMonitor() {
+    monKeepReading = false;
+    if (monReader) {
+      try {
+        await monReader.cancel();
+      } catch (_) {}
+    }
+
+    if (monPort) {
+      try {
+        await monPort.close();
+      } catch (_) {}
+      monPort = null;
+    }
+
+    monPortLabel.textContent = 'No port connected';
+    monPortLabel.classList.remove('connected');
+
+    monBtnConnect.classList.remove('hidden');
+    monBtnDisconnect.classList.add('hidden');
+    monInputText.disabled = true;
+    monBtnSend.disabled = true;
+
+    logToSerialTerminal('info', 'Disconnected from serial port.');
+  }
+
+  async function readSerialStream() {
+    while (monPort && monPort.readable && monKeepReading) {
+      try {
+        const textDecoder = new TextDecoderStream();
+        monClosedPromise = monPort.readable.pipeTo(textDecoder.writable);
+        monReader = textDecoder.readable.getReader();
+
+        let partialLine = '';
+
+        while (true) {
+          const { value, done } = await monReader.read();
+          if (done) break;
+          if (value) {
+            partialLine += value;
+            const lines = partialLine.split('\n');
+            partialLine = lines.pop(); // Keep unfinished line fragment
+
+            lines.forEach(lineText => {
+              logToSerialTerminal('serial', lineText.replace('\r', ''));
+            });
+          }
+        }
+      } catch (err) {
+        if (monKeepReading) {
+          logToSerialTerminal('error', `Serial Read Error: ${err.message}`);
+        }
+      } finally {
+        if (monReader) {
+          monReader.releaseLock();
+          monReader = null;
+        }
+      }
+    }
+  }
+
+  // Send Serial Command Handler
+  async function sendSerialCommand() {
+    if (!monPort || !monPort.writable) {
+      alert('Serial port is not connected.');
+      return;
+    }
+
+    let payload = monInputText.value;
+    if (!payload && payload !== '') return;
+
+    const ending = monSelectLineEnding.value.replace('\\r', '\r').replace('\\n', '\n');
+    payload += ending;
+
+    try {
+      const encoder = new TextEncoder();
+      const writer = monPort.writable.getWriter();
+      await writer.write(encoder.encode(payload));
+      writer.releaseLock();
+
+      logToSerialTerminal('info', `📤 Sent: ${monInputText.value}`);
+      monInputText.value = '';
+
+    } catch (err) {
+      logToSerialTerminal('error', `Failed to send serial data: ${err.message}`);
+    }
+  }
+
+  monBtnSend.addEventListener('click', sendSerialCommand);
+  monInputText.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') sendSerialCommand();
+  });
+
+  monBtnClear.addEventListener('click', () => {
+    monTerminalBody.innerHTML = '';
+  });
+
+  function logToSerialTerminal(type, text) {
+    if (!text && text !== '') return;
+    const line = document.createElement('div');
+    line.className = `log-line ${type}`;
+    const timestamp = new Date().toLocaleTimeString();
+    line.textContent = `[${timestamp}] ${text}`;
+    monTerminalBody.appendChild(line);
+
+    if (monAutoscrollChk.checked) {
+      monTerminalBody.scrollTop = monTerminalBody.scrollHeight;
+    }
+  }
+
+  // ==========================================
   // ADMIN PANEL & COMPILATION PIPELINE
   // ==========================================
 
@@ -490,7 +727,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const file = uploadFileInput.files[0];
 
     if (!title || !description || !board_type || !file) {
-      alert('Please fill out all fields and select a valid .ino sketch file.');
+      alert('Please fill out all fields and select a valid file.');
       return;
     }
 
@@ -501,8 +738,8 @@ document.addEventListener('DOMContentLoaded', () => {
     formData.append('ino_file', file);
 
     uploadBtn.disabled = true;
-    uploadBtn.innerHTML = `<span class="spinner-sm"></span> Compiling with arduino-cli...`;
-    logToAdminTerminal('info', `🚀 Uploading sketch "${file.name}" and triggering background compilation for target "${board_type}"...`);
+    uploadBtn.innerHTML = `<span class="spinner-sm"></span> Processing upload...`;
+    logToAdminTerminal('info', `🚀 Uploading file "${file.name}" for target "${board_type}"...`);
 
     try {
       const res = await fetch('/api/admin/upload-project', {
@@ -514,13 +751,13 @@ document.addEventListener('DOMContentLoaded', () => {
       const data = await res.json();
 
       if (!res.ok) {
-        logToAdminTerminal('error', `❌ Compilation Failed:\n${data.error}\n\nLogs:\n${data.logs || 'No log details available.'}`);
-        alert(`Compilation Error: ${data.error}`);
+        logToAdminTerminal('error', `❌ Upload/Compilation Failed:\n${data.error}\n\nLogs:\n${data.logs || 'No log details available.'}`);
+        alert(`Error: ${data.error}`);
         return;
       }
 
-      logToAdminTerminal('success', `✅ Compilation & Publishing Successful!\nProject ID: ${data.project.id}\nBinary Type: .${data.project.file_type.toUpperCase()}\n\narduino-cli Logs:\n${data.logs}`);
-      alert('🎉 Project successfully compiled into binary and published to catalog! Raw source code was deleted.');
+      logToAdminTerminal('success', `✅ Processing & Publishing Successful!\nProject ID: ${data.project.id}\nBinary Type: .${data.project.file_type.toUpperCase()}\n\nLogs:\n${data.logs}`);
+      alert('🎉 Project successfully published to catalog!');
 
       uploadForm.reset();
       fetchProjectsAdmin();
@@ -529,7 +766,7 @@ document.addEventListener('DOMContentLoaded', () => {
       logToAdminTerminal('error', `❌ Server Communication Error: ${err.message}`);
     } finally {
       uploadBtn.disabled = false;
-      uploadBtn.innerHTML = `⚙️ Compile Sketch & Publish Binary`;
+      uploadBtn.innerHTML = `⚙️ Process & Publish Binary`;
     }
   });
 
@@ -545,7 +782,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function renderAdminProjectsTable(projects) {
     if (projects.length === 0) {
-      adminProjectsList.innerHTML = `<tr><td colspan="5" class="text-center">No projects published yet. Upload your first .ino sketch above.</td></tr>`;
+      adminProjectsList.innerHTML = `<tr><td colspan="5" class="text-center">No projects published yet. Upload your first sketch or binary above.</td></tr>`;
       return;
     }
 
@@ -556,10 +793,19 @@ document.addEventListener('DOMContentLoaded', () => {
         <td>.${p.file_type.toUpperCase()}</td>
         <td>${new Date(p.created_at).toLocaleString()}</td>
         <td>
+          <button class="btn btn-secondary btn-sm edit-project-btn" data-id="${p.id}" style="margin-right: 0.3rem;">✏️ Edit</button>
           <button class="btn btn-danger btn-sm delete-project-btn" data-id="${p.id}">🗑️ Delete</button>
         </td>
       </tr>
     `).join('');
+
+    document.querySelectorAll('.edit-project-btn').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        const id = e.currentTarget.getAttribute('data-id');
+        const proj = projects.find(p => p.id === id);
+        if (proj) openEditProjectModal(proj);
+      });
+    });
 
     document.querySelectorAll('.delete-project-btn').forEach(btn => {
       btn.addEventListener('click', async (e) => {
@@ -594,6 +840,6 @@ document.addEventListener('DOMContentLoaded', () => {
     adminTerminal.scrollTop = adminTerminal.scrollHeight;
   }
 
-  // Initial load
+  // Initial catalog load
   fetchProjects();
 });

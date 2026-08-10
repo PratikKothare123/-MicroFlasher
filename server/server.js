@@ -59,6 +59,7 @@ function authenticateAdmin(req, res, next) {
     req.admin = decoded;
     next();
   } catch (err) {
+    console.error('JWT Verification Error:', err.message);
     return res.status(401).json({ error: 'Unauthorized: Invalid or expired token.' });
   }
 }
@@ -245,6 +246,42 @@ app.delete('/api/admin/projects/:id', authenticateAdmin, async (req, res) => {
   } catch (error) {
     console.error('Error deleting project:', error);
     return res.status(500).json({ error: 'Failed to delete project.' });
+  }
+});
+
+/**
+ * PUT /api/admin/projects/:id
+ * Updates metadata (title, description, board_type) of a published project
+ */
+app.put('/api/admin/projects/:id', authenticateAdmin, async (req, res) => {
+  const { id } = req.params;
+  const { title, description, board_type } = req.body;
+
+  if (!title || !description || !board_type) {
+    return res.status(400).json({ error: 'Title, description, and board_type are required.' });
+  }
+
+  try {
+    const project = await dbAsync.get(`SELECT * FROM projects WHERE id = ?`, [id]);
+    if (!project) {
+      return res.status(404).json({ error: 'Project not found.' });
+    }
+
+    await dbAsync.run(
+      `UPDATE projects SET title = ?, description = ?, board_type = ? WHERE id = ?`,
+      [title, description, board_type, id]
+    );
+
+    console.log(`✏️ Project metadata updated for ${id}`);
+
+    return res.json({
+      message: 'Project updated successfully!',
+      project: { id, title, description, board_type, file_type: project.file_type }
+    });
+
+  } catch (error) {
+    console.error('Error updating project:', error);
+    return res.status(500).json({ error: 'Failed to update project.' });
   }
 });
 

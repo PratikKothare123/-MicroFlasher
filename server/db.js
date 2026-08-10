@@ -15,22 +15,20 @@ const dbPath = path.join(dataDir, 'flasher.sqlite');
 let db = null;
 let useFallbackDb = false;
 
+const defaultPasswordHash = bcrypt.hashSync('admin123', 10);
+
 // In-Memory / Global Fallback Store for Serverless Vercel
 const fallbackStore = {
   projects: [],
-  admins: []
+  admins: [
+    {
+      id: 'admin_default',
+      username: 'admin',
+      password_hash: defaultPasswordHash,
+      created_at: new Date().toISOString()
+    }
+  ]
 };
-
-// Seed default admin in fallback store
-(async () => {
-  const hash = await bcrypt.hash('admin123', 10);
-  fallbackStore.admins.push({
-    id: 'admin_default',
-    username: 'admin',
-    password_hash: hash,
-    created_at: new Date().toISOString()
-  });
-})();
 
 try {
   const sqlite3 = require('sqlite3').verbose();
@@ -57,7 +55,6 @@ try {
           created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
       `, () => {
-        // Migration check for binary_data column
         db.run(`ALTER TABLE projects ADD COLUMN binary_data TEXT`, () => {});
       });
 
@@ -72,7 +69,6 @@ try {
         if (!err) {
           db.get(`SELECT COUNT(*) as count FROM admins`, [], async (err, row) => {
             if (!err && row && row.count === 0) {
-              const defaultPasswordHash = await bcrypt.hash('admin123', 10);
               db.run(`INSERT INTO admins (id, username, password_hash) VALUES ('admin_default', 'admin', ?)`, [defaultPasswordHash]);
             }
           });

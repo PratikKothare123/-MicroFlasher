@@ -30,12 +30,11 @@ const upload = multer({
   dest: tempUploadDir,
   limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit
   fileFilter: (req, file, cb) => {
-    // Validate .ino extension or plain text
     const ext = path.extname(file.originalname).toLowerCase();
-    if (ext === '.ino' || ext === '.cpp' || ext === '.c' || file.mimetype.includes('text')) {
+    if (ext === '.ino' || ext === '.bin' || ext === '.hex' || ext === '.cpp' || ext === '.c' || file.mimetype.includes('text')) {
       cb(null, true);
     } else {
-      cb(new Error('Invalid file type. Only Arduino .ino files are accepted.'));
+      cb(new Error('Invalid file type. Accepted formats: .ino, .bin, .hex'));
     }
   }
 });
@@ -147,6 +146,8 @@ app.post('/api/admin/change-password', authenticateAdmin, async (req, res) => {
  * POST /api/admin/upload-project
  * Handles sketch file upload, invokes arduino-cli, saves binary to disk & DB, deletes source .ino
  */
+const { v4: uuidv4 } = require('uuid');
+
 app.post('/api/admin/upload-project', authenticateAdmin, upload.single('ino_file'), async (req, res) => {
   const { title, description, board_type } = req.body;
   const file = req.file;
@@ -157,39 +158,62 @@ app.post('/api/admin/upload-project', authenticateAdmin, upload.single('ino_file
   }
 
   if (!file) {
-    return res.status(400).json({ error: 'Please select a valid .ino sketch file to upload.' });
+    return res.status(400).json({ error: 'Please select a valid file (.ino, .bin, or .hex) to upload.' });
   }
 
-  console.log(`📥 Upload request received: "${title}" for board "${board_type}"`);
+  const ext = path.extname(file.originalname).toLowerCase().replace('.', '');
+  console.log(`📥 Upload request received: "${title}" (${file.originalname}) for board "${board_type}"`);
 
   try {
-    // Execute compilation service
-    const result = await compileSketch(file.path, file.originalname, board_type);
+    let projectId, binFilePath, fileType, logs;
+
+    if (ext === 'bin' || ext === 'hex') {
+      // Direct binary upload (No arduino-cli compilation required)
+      projectId = uuidv4();
+      fileType = ext;
+      binFilePath = `${projectId}.${fileType}`;
+      const destPath = path.join(BINARIES_DIR, binFilePath);
+
+      fs.copyFileSync(file.path, destPath);
+      try { fs.unlinkSync(file.path); } catch (_) {}
+
+      logs = `Direct pre-compiled binary upload accepted.\nFormat: .${fileType.toUpperCase()}\nSaved as: ${binFilePath}`;
+    } else {
+      // .ino sketch compilation via arduino-cli
+      const result = await compileSketch(file.path, file.originalname, board_type);
+      projectId = result.projectId;
+      binFilePath = result.binFilePath;
+      fileType = result.fileType;
+      logs = result.logs;
+    }
 
     // Save project metadata to SQLite database
     await dbAsync.run(
       `INSERT INTO projects (id, title, description, board_type, bin_file_path, file_type) VALUES (?, ?, ?, ?, ?, ?)`,
-      [result.projectId, title, description, board_type, result.binFilePath, result.fileType]
+      [projectId, title, description, board_type, binFilePath, fileType]
     );
 
-    console.log(`🎉 Project successfully compiled and published: ${result.projectId}`);
+    console.log(`🎉 Project successfully published: ${projectId}`);
 
     return res.status(201).json({
-      message: 'Project compiled and published successfully!',
+      message: 'Project published successfully!',
       project: {
-        id: result.projectId,
+        id: projectId,
         title,
         description,
         board_type,
-        file_type: result.fileType
+        file_type: fileType
       },
-      logs: result.logs
+      logs
     });
 
   } catch (error) {
+    if (file && fs.existsSync(file.path)) {
+      try { fs.unlinkSync(file.path); } catch (_) {}
+    }
     console.error('❌ Upload/Compilation Error:', error.message || error);
     return res.status(500).json({
-      error: error.message || 'Compilation failed.',
+      error: error.message || 'Processing failed.',
       logs: error.logs || ''
     });
   }

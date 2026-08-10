@@ -1,0 +1,33 @@
+{
+  "name": "microcontroller-code-flasher",
+  "version": "1.0.0",
+  "description": "Full-stack web-based microcontroller code flasher with source code protection via arduino-cli compilation",
+  "main": "server/server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server/server.js",
+    "dev": "node --watch server/server.js"
+  },
+  "keywords": [
+    "microcontroller",
+    "arduino",
+    "esp32",
+    "esp8266",
+    "web-serial",
+    "arduino-cli",
+    "esptool",
+    "stk500"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "jsonwebtoken": "^9.0.3",
+    "multer": "^1.4.5-lts.1",
+    "sqlite3": "^5.1.7",
+    "uuid": "^9.0.1"
+  }
+}

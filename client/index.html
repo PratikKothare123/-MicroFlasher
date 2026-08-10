@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MicroFlasher - Microcontroller Web Code Flasher</title>
+  <meta name="description" content="Flash ESP32, ESP8266, and Arduino Uno microcontrollers directly from your browser using Web Serial API while keeping source code protected.">
+  <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+
+  <!-- Application Header -->
+  <header class="app-header">
+    <div class="logo-area">
+      <div class="logo-icon">⚡</div>
+      <div>
+        <h1 class="logo-title">MicroFlasher</h1>
+        <p class="subtitle">Protected Binary Web Serial Flashing Platform</p>
+      </div>
+    </div>
+
+    <!-- Navigation Tabs -->
+    <nav class="nav-tabs">
+      <button id="tab-user" class="tab-btn active">📖 User Catalog</button>
+      <button id="tab-admin" class="tab-btn">⚙️ Admin Portal</button>
+    </nav>
+
+    <!-- Web Serial API Browser Status -->
+    <div id="serial-status-badge" class="status-badge">
+      <span class="dot"></span> Checking Serial Support...
+    </div>
+  </header>
+
+  <!-- Main Container -->
+  <main class="container">
+
+    <!-- USER DASHBOARD VIEW -->
+    <section id="view-user">
+      <div class="controls-bar">
+        <div class="search-box">
+          <input type="text" id="search-input" class="input-field" placeholder="🔍 Search projects by title or description...">
+        </div>
+        <select id="board-filter-select" class="select-field">
+          <option value="">All Board Targets</option>
+          <option value="esp32">ESP32</option>
+          <option value="esp8266">ESP8266</option>
+          <option value="uno">Arduino Uno</option>
+        </select>
+      </div>
+
+      <!-- Project Cards Grid -->
+      <div id="project-grid" class="grid-container">
+        <!-- Rendered dynamically via app.js -->
+      </div>
+    </section>
+
+    <!-- ADMIN PANEL VIEW -->
+    <section id="view-admin" class="hidden">
+      
+      <!-- ADMIN LOGIN FORM (Displayed when unauthenticated) -->
+      <div id="admin-login-card" class="admin-card" style="max-width: 480px; margin: 2rem auto;">
+        <h2>🔐 Admin Authentication</h2>
+        <p class="form-hint" style="margin-bottom: 1.5rem;">
+          Please log in with your administrator credentials to manage compiled projects and compilation pipeline.
+        </p>
+
+        <form id="admin-login-form">
+          <div class="form-group">
+            <label class="form-label" for="login-username">Username</label>
+            <input type="text" id="login-username" class="input-field" placeholder="Enter admin username" required>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label" for="login-password">Password</label>
+            <input type="password" id="login-password" class="input-field" placeholder="Enter admin password" required>
+          </div>
+
+          <div id="login-error-alert" class="alert-box error hidden" style="margin-bottom: 1rem;"></div>
+
+          <button type="submit" id="login-btn" class="btn btn-primary" style="width: 100%;">
+            🔑 Admin Login
+          </button>
+        </form>
+
+        <p class="form-hint" style="margin-top: 1.2rem; text-align: center;">
+          Default setup: Username: <code>admin</code> | Password: <code>admin123</code>
+        </p>
+      </div>
+
+      <!-- ADMIN DASHBOARD CONTENT (Displayed when authenticated) -->
+      <div id="admin-dashboard-content" class="hidden">
+        
+        <!-- Admin Bar: Logged-in Info, Change Password & Logout -->
+        <div class="admin-header-bar">
+          <div class="user-info">
+            <span class="user-badge">👤 Logged in as: <strong id="admin-user-display">admin</strong></span>
+          </div>
+          <div class="admin-actions">
+            <button id="btn-open-change-password" class="btn btn-secondary btn-sm">🔑 Change Password</button>
+            <button id="btn-admin-logout" class="btn btn-danger btn-sm">🚪 Logout</button>
+          </div>
+        </div>
+
+        <div class="admin-card">
+          <h2>⬆️ Upload & Compile Sketch (.ino)</h2>
+          <p class="form-hint" style="margin-bottom: 1.5rem;">
+            Upload a raw Arduino <code>.ino</code> file. The backend automatically compiles it into a <code>.bin</code>/<code>.hex</code> binary using <code>arduino-cli</code> and immediately deletes the source code.
+          </p>
+
+          <form id="upload-form">
+            <div class="form-group">
+              <label class="form-label" for="upload-title">Project Title</label>
+              <input type="text" id="upload-title" class="input-field" placeholder="e.g. WiFi Smart Weather Station" required>
+            </div>
+
+            <div class="form-group">
+              <label class="form-label" for="upload-desc">Description</label>
+              <textarea id="upload-desc" class="textarea-field" rows="3" placeholder="Brief explanation of what this firmware binary does..." required></textarea>
+            </div>
+
+            <div class="form-group">
+              <label class="form-label" for="upload-board">Microcontroller Target Board (FQBN)</label>
+              <select id="upload-board" class="select-field" style="width: 100%;" required>
+                <option value="esp32:esp32:esp32">ESP32 (esp32:esp32:esp32)</option>
+                <option value="esp8266:esp8266:generic">ESP8266 (esp8266:esp8266:generic)</option>
+                <option value="arduino:avr:uno">Arduino Uno (arduino:avr:uno)</option>
+              </select>
+            </div>
+
+            <div class="form-group">
+              <label class="form-label" for="upload-file">Select Arduino Sketch (.ino file)</label>
+              <input type="file" id="upload-file" class="input-field" accept=".ino" required>
+            </div>
+
+            <button type="submit" id="upload-btn" class="btn btn-primary" style="width: 100%;">
+              ⚙️ Compile Sketch & Publish Binary
+            </button>
+          </form>
+        </div>
+
+        <!-- Admin Compilation Logs Terminal -->
+        <div class="admin-card">
+          <h3>💻 Build Logs & Compilation Monitor</h3>
+          <div class="terminal-window" style="margin-top: 1rem;">
+            <div class="terminal-header">
+              <span class="terminal-title">arduino-cli stdout/stderr</span>
+            </div>
+            <div id="admin-terminal" class="terminal-body">
+              <div class="log-line info">Compilation output logs will appear here after sketch submission.</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Published Projects Table -->
+        <div class="admin-card">
+          <h3>📦 Managed Compiled Projects</h3>
+          <div class="table-container" style="margin-top: 1rem;">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Project Title</th>
+                  <th>Board FQBN</th>
+                  <th>File Format</th>
+                  <th>Created Date</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody id="admin-projects-list">
+                <!-- Rendered dynamically -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+      </div>
+
+    </section>
+
+    <!-- CHANGE PASSWORD MODAL -->
+    <div id="change-password-modal" class="modal-overlay hidden">
+      <div class="modal-card" style="max-width: 440px;">
+        <div class="modal-header">
+          <h2>🔑 Change Admin Password</h2>
+          <button id="change-pass-close-btn" class="modal-close">&times;</button>
+        </div>
+        <div class="modal-body">
+          <form id="change-password-form">
+            <div class="form-group">
+              <label class="form-label" for="pass-old">Current Password</label>
+              <input type="password" id="pass-old" class="input-field" placeholder="Enter current password" required>
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="pass-new">New Password</label>
+              <input type="password" id="pass-new" class="input-field" placeholder="At least 6 characters" required>
+            </div>
+            <div class="form-group">
+              <label class="form-label" for="pass-confirm">Confirm New Password</label>
+              <input type="password" id="pass-confirm" class="input-field" placeholder="Re-enter new password" required>
+            </div>
+
+            <div id="change-pass-alert" class="alert-box hidden" style="margin-bottom: 1rem;"></div>
+
+            <button type="submit" id="btn-save-password" class="btn btn-primary" style="width: 100%;">
+              💾 Save New Password
+            </button>
+          </form>
+        </div>
+      </div>
+    </div>
+
+  </main>
+
+  <!-- FLASHING MODAL / DRAWER -->
+  <div id="flash-modal" class="modal-overlay hidden">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div>
+          <h2 id="modal-project-title">Flash Firmware</h2>
+          <span id="modal-project-board" class="board-pill">Board Target</span>
+        </div>
+        <button id="modal-close-btn" class="modal-close">&times;</button>
+      </div>
+
+      <div class="modal-body">
+        <p id="modal-project-desc" style="color: var(--text-muted); font-size: 0.9rem;"></p>
+
+        <!-- Serial Controls -->
+        <div class="serial-control-group">
+          <button id="btn-select-port" class="btn btn-secondary">🔌 Connect Board (COM Port)</button>
+          <span id="selected-port-label" class="port-status-text">No port connected</span>
+          
+          <select id="select-baud-rate" class="select-field" style="min-width: 120px;">
+            <option value="115200">115200 Baud</option>
+            <option value="921600">921600 Baud</option>
+            <option value="460800">460800 Baud</option>
+            <option value="57600">57600 Baud</option>
+            <option value="9600">9600 Baud</option>
+          </select>
+        </div>
+
+        <!-- Progress Bar -->
+        <div id="flash-progress-wrapper" class="progress-container hidden">
+          <div class="progress-track">
+            <div id="flash-progress-bar" class="progress-fill"></div>
+          </div>
+          <span id="flash-progress-text" class="progress-text">0% - Preparing...</span>
+        </div>
+
+        <!-- Flash Action Button -->
+        <button id="btn-flash-binary" class="btn btn-primary" style="width: 100%; font-size: 1.05rem;" disabled>
+          ⚡ Flash Compiled Binary to Microcontroller
+        </button>
+
+        <!-- Live Serial Flashing Terminal -->
+        <div class="terminal-window">
+          <div class="terminal-header">
+            <span class="terminal-title">Web Serial Console Log</span>
+            <button id="btn-clear-terminal" class="btn btn-secondary btn-sm" style="padding: 0.2rem 0.6rem; font-size: 0.72rem;">Clear</button>
+          </div>
+          <div id="flash-terminal" class="terminal-body">
+            <!-- Dynamic logs -->
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Third-party JS Dependencies (Local Bundle) -->
+  <script type="module" src="lib/esptool-bundle.js"></script>
+
+  <!-- Application Modules -->
+  <script src="js/stk500-flasher.js"></script>
+  <script src="js/esp-flasher.js"></script>
+  <script src="js/app.js"></script>
+
+</body>
+</html>

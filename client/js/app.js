@@ -1,0 +1,599 @@
+/**
+ * Main Application Client Logic
+ * Handles API requests, Web Serial port connections, Admin Authentication, UI state, and flasher dispatch
+ */
+
+document.addEventListener('DOMContentLoaded', () => {
+  // DOM Elements
+  const tabUserBtn = document.getElementById('tab-user');
+  const tabAdminBtn = document.getElementById('tab-admin');
+  const viewUser = document.getElementById('view-user');
+  const viewAdmin = document.getElementById('view-admin');
+  const serialStatusBadge = document.getElementById('serial-status-badge');
+
+  // User View Elements
+  const searchInput = document.getElementById('search-input');
+  const boardFilterSelect = document.getElementById('board-filter-select');
+  const projectGrid = document.getElementById('project-grid');
+
+  // Flasher Modal Elements
+  const flashModal = document.getElementById('flash-modal');
+  const modalCloseBtn = document.getElementById('modal-close-btn');
+  const modalProjectTitle = document.getElementById('modal-project-title');
+  const modalProjectBoard = document.getElementById('modal-project-board');
+  const modalProjectDesc = document.getElementById('modal-project-desc');
+  const btnSelectPort = document.getElementById('btn-select-port');
+  const selectedPortLabel = document.getElementById('selected-port-label');
+  const selectBaudRate = document.getElementById('select-baud-rate');
+  const btnFlashBinary = document.getElementById('btn-flash-binary');
+  const flashProgressWrapper = document.getElementById('flash-progress-wrapper');
+  const flashProgressBar = document.getElementById('flash-progress-bar');
+  const flashProgressText = document.getElementById('flash-progress-text');
+  const flashTerminal = document.getElementById('flash-terminal');
+  const btnClearTerminal = document.getElementById('btn-clear-terminal');
+
+  // Admin Auth & Panel Elements
+  const adminLoginCard = document.getElementById('admin-login-card');
+  const adminLoginForm = document.getElementById('admin-login-form');
+  const loginUsernameInput = document.getElementById('login-username');
+  const loginPasswordInput = document.getElementById('login-password');
+  const loginErrorAlert = document.getElementById('login-error-alert');
+
+  const adminDashboardContent = document.getElementById('admin-dashboard-content');
+  const adminUserDisplay = document.getElementById('admin-user-display');
+  const btnAdminLogout = document.getElementById('btn-admin-logout');
+  const btnOpenChangePassword = document.getElementById('btn-open-change-password');
+
+  const changePasswordModal = document.getElementById('change-password-modal');
+  const changePassCloseBtn = document.getElementById('change-pass-close-btn');
+  const changePasswordForm = document.getElementById('change-password-form');
+  const passOldInput = document.getElementById('pass-old');
+  const passNewInput = document.getElementById('pass-new');
+  const passConfirmInput = document.getElementById('pass-confirm');
+  const changePassAlert = document.getElementById('change-pass-alert');
+
+  const uploadForm = document.getElementById('upload-form');
+  const uploadTitleInput = document.getElementById('upload-title');
+  const uploadDescInput = document.getElementById('upload-desc');
+  const uploadBoardSelect = document.getElementById('upload-board');
+  const uploadFileInput = document.getElementById('upload-file');
+  const uploadBtn = document.getElementById('upload-btn');
+  const adminTerminal = document.getElementById('admin-terminal');
+  const adminProjectsList = document.getElementById('admin-projects-list');
+
+  // App State
+  let projectsList = [];
+  let selectedProject = null;
+  let currentSerialPort = null;
+  let isFlashing = false;
+  let adminToken = localStorage.getItem('adminToken') || null;
+  let adminUsername = localStorage.getItem('adminUsername') || null;
+
+  // Check Web Serial API Support
+  checkWebSerialSupport();
+
+  // Navigation Tab Handlers
+  tabUserBtn.addEventListener('click', () => switchTab('user'));
+  tabAdminBtn.addEventListener('click', () => switchTab('admin'));
+
+  function switchTab(tab) {
+    if (tab === 'user') {
+      tabUserBtn.classList.add('active');
+      tabAdminBtn.classList.remove('active');
+      viewUser.classList.remove('hidden');
+      viewAdmin.classList.add('hidden');
+      fetchProjects();
+    } else {
+      tabAdminBtn.classList.add('active');
+      tabUserBtn.classList.remove('active');
+      viewAdmin.classList.remove('hidden');
+      viewUser.classList.add('hidden');
+      checkAdminSession();
+    }
+  }
+
+  function checkWebSerialSupport() {
+    if ('serial' in navigator) {
+      serialStatusBadge.innerHTML = `<span class="dot green"></span> Web Serial Ready`;
+      serialStatusBadge.className = 'status-badge ready';
+    } else {
+      serialStatusBadge.innerHTML = `<span class="dot red"></span> Web Serial Unsupported (Use Chrome/Edge)`;
+      serialStatusBadge.className = 'status-badge unsupported';
+    }
+  }
+
+  // ==========================================
+  // ADMIN AUTHENTICATION LOGIC
+  // ==========================================
+
+  async function checkAdminSession() {
+    if (!adminToken) {
+      showLoginView();
+      return;
+    }
+
+    try {
+      const res = await fetch('/api/admin/verify', {
+        headers: { 'Authorization': `Bearer ${adminToken}` }
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        adminUsername = data.username;
+        localStorage.setItem('adminUsername', adminUsername);
+        showDashboardView();
+      } else {
+        clearAdminToken();
+        showLoginView();
+      }
+    } catch (_) {
+      showDashboardView(); // Graceful fallback if offline
+    }
+  }
+
+  function showLoginView() {
+    adminLoginCard.classList.remove('hidden');
+    adminDashboardContent.classList.add('hidden');
+    loginErrorAlert.classList.add('hidden');
+  }
+
+  function showDashboardView() {
+    adminLoginCard.classList.add('hidden');
+    adminDashboardContent.classList.remove('hidden');
+    adminUserDisplay.textContent = adminUsername || 'admin';
+    fetchProjectsAdmin();
+    checkServerHealth();
+  }
+
+  function clearAdminToken() {
+    adminToken = null;
+    adminUsername = null;
+    localStorage.removeItem('adminToken');
+    localStorage.removeItem('adminUsername');
+  }
+
+  // Login Form Submission
+  adminLoginForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const username = loginUsernameInput.value.trim();
+    const password = loginPasswordInput.value;
+
+    loginErrorAlert.classList.add('hidden');
+
+    try {
+      const res = await fetch('/api/admin/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password })
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        loginErrorAlert.textContent = data.error || 'Login failed.';
+        loginErrorAlert.classList.remove('hidden');
+        return;
+      }
+
+      adminToken = data.token;
+      adminUsername = data.username;
+      localStorage.setItem('adminToken', adminToken);
+      localStorage.setItem('adminUsername', adminUsername);
+
+      adminLoginForm.reset();
+      showDashboardView();
+
+    } catch (err) {
+      loginErrorAlert.textContent = 'Network error during login: ' + err.message;
+      loginErrorAlert.classList.remove('hidden');
+    }
+  });
+
+  // Logout Handler
+  btnAdminLogout.addEventListener('click', () => {
+    clearAdminToken();
+    showLoginView();
+  });
+
+  // Change Password Modal Handlers
+  btnOpenChangePassword.addEventListener('click', () => {
+    changePasswordForm.reset();
+    changePassAlert.classList.add('hidden');
+    changePasswordModal.classList.remove('hidden');
+  });
+
+  changePassCloseBtn.addEventListener('click', () => {
+    changePasswordModal.classList.add('hidden');
+  });
+
+  changePasswordForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const oldPassword = passOldInput.value;
+    const newPassword = passNewInput.value;
+    const confirmPassword = passConfirmInput.value;
+
+    changePassAlert.classList.add('hidden');
+
+    if (newPassword !== confirmPassword) {
+      changePassAlert.className = 'alert-box error';
+      changePassAlert.textContent = 'New password and confirmation do not match.';
+      changePassAlert.classList.remove('hidden');
+      return;
+    }
+
+    try {
+      const res = await fetch('/api/admin/change-password', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${adminToken}`
+        },
+        body: JSON.stringify({ oldPassword, newPassword })
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        changePassAlert.className = 'alert-box error';
+        changePassAlert.textContent = data.error || 'Failed to update password.';
+        changePassAlert.classList.remove('hidden');
+        return;
+      }
+
+      changePassAlert.className = 'alert-box success';
+      changePassAlert.textContent = '🎉 Password changed successfully!';
+      changePassAlert.classList.remove('hidden');
+
+      setTimeout(() => {
+        changePasswordModal.classList.add('hidden');
+      }, 1500);
+
+    } catch (err) {
+      changePassAlert.className = 'alert-box error';
+      changePassAlert.textContent = 'Error: ' + err.message;
+      changePassAlert.classList.remove('hidden');
+    }
+  });
+
+  // ==========================================
+  // CATALOG & USER DASHBOARD
+  // ==========================================
+
+  async function fetchProjects() {
+    try {
+      projectGrid.innerHTML = `<div class="loading-spinner"><div class="spinner"></div><p>Loading projects...</p></div>`;
+      const res = await fetch('/api/projects');
+      if (!res.ok) throw new Error('Failed to load projects');
+      projectsList = await res.json();
+      renderProjectsGrid();
+    } catch (err) {
+      projectGrid.innerHTML = `<div class="empty-state">❌ Error loading project catalog: ${err.message}</div>`;
+    }
+  }
+
+  function renderProjectsGrid() {
+    const searchTerm = searchInput.value.toLowerCase().trim();
+    const boardFilter = boardFilterSelect.value;
+
+    const filtered = projectsList.filter(p => {
+      const matchesSearch = p.title.toLowerCase().includes(searchTerm) || p.description.toLowerCase().includes(searchTerm);
+      const matchesBoard = !boardFilter || p.board_type.includes(boardFilter);
+      return matchesSearch && matchesBoard;
+    });
+
+    if (filtered.length === 0) {
+      projectGrid.innerHTML = `<div class="empty-state">No microcontroller projects found matching your filter criteria.</div>`;
+      return;
+    }
+
+    projectGrid.innerHTML = filtered.map(p => `
+      <div class="project-card" data-id="${p.id}">
+        <div class="card-header">
+          <span class="board-pill ${getBoardBadgeClass(p.board_type)}">${formatBoardName(p.board_type)}</span>
+          <span class="file-tag">${p.file_type.toUpperCase()}</span>
+        </div>
+        <h3 class="card-title">${escapeHtml(p.title)}</h3>
+        <p class="card-desc">${escapeHtml(p.description)}</p>
+        <div class="card-footer">
+          <span class="date-text">${new Date(p.created_at).toLocaleDateString()}</span>
+          <button class="btn btn-primary btn-sm open-flash-btn" data-id="${p.id}">
+            🔌 Connect & Flash
+          </button>
+        </div>
+      </div>
+    `).join('');
+
+    document.querySelectorAll('.open-flash-btn').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        const id = e.currentTarget.getAttribute('data-id');
+        openFlashModal(id);
+      });
+    });
+  }
+
+  searchInput.addEventListener('input', renderProjectsGrid);
+  boardFilterSelect.addEventListener('change', renderProjectsGrid);
+
+  function formatBoardName(fqbn) {
+    if (fqbn.includes('uno') || fqbn.includes('avr')) return 'Arduino Uno';
+    if (fqbn.includes('esp32')) return 'ESP32';
+    if (fqbn.includes('esp8266')) return 'ESP8266';
+    return fqbn;
+  }
+
+  function getBoardBadgeClass(fqbn) {
+    if (fqbn.includes('uno') || fqbn.includes('avr')) return 'uno-badge';
+    if (fqbn.includes('esp32')) return 'esp32-badge';
+    if (fqbn.includes('esp8266')) return 'esp8266-badge';
+    return 'custom-badge';
+  }
+
+  function escapeHtml(str) {
+    return (str || '').replace(/[&<>"']/g, (m) => {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m];
+    });
+  }
+
+  // ==========================================
+  // FLASHING MODAL & WEB SERIAL INTERACTION
+  // ==========================================
+
+  function openFlashModal(projectId) {
+    selectedProject = projectsList.find(p => p.id === projectId);
+    if (!selectedProject) return;
+
+    modalProjectTitle.textContent = selectedProject.title;
+    modalProjectBoard.textContent = formatBoardName(selectedProject.board_type);
+    modalProjectBoard.className = `board-pill ${getBoardBadgeClass(selectedProject.board_type)}`;
+    modalProjectDesc.textContent = selectedProject.description;
+
+    if (selectedProject.board_type.includes('uno')) {
+      selectBaudRate.value = '115200';
+    } else {
+      selectBaudRate.value = '115200';
+    }
+
+    resetFlasherUI();
+    flashModal.classList.remove('hidden');
+  }
+
+  function closeFlashModal() {
+    if (isFlashing) {
+      if (!confirm('Flashing is currently in progress. Are you sure you want to exit?')) return;
+    }
+    flashModal.classList.add('hidden');
+    selectedProject = null;
+  }
+
+  modalCloseBtn.addEventListener('click', closeFlashModal);
+
+  function resetFlasherUI() {
+    flashProgressWrapper.classList.add('hidden');
+    flashProgressBar.style.width = '0%';
+    flashProgressText.textContent = '0%';
+    flashTerminal.innerHTML = `<div class="log-line info">Ready to connect serial port and flash firmware binary.</div>`;
+    btnFlashBinary.disabled = !currentSerialPort;
+  }
+
+  btnSelectPort.addEventListener('click', async () => {
+    if (!('serial' in navigator)) {
+      alert('Web Serial API is not supported in this browser. Please open this app in Google Chrome or Microsoft Edge.');
+      return;
+    }
+
+    try {
+      currentSerialPort = await navigator.serial.requestPort();
+      const info = currentSerialPort.getInfo();
+      const portText = info.usbVendorId ? `USB Device (VID: 0x${info.usbVendorId.toString(16).padStart(4, '0')})` : 'Selected Serial COM Port';
+      selectedPortLabel.textContent = `🟢 ${portText}`;
+      selectedPortLabel.classList.add('connected');
+      btnFlashBinary.disabled = false;
+      logToTerminal('success', `Connected to Web Serial Port: ${portText}`);
+    } catch (err) {
+      if (err.name !== 'NotFoundError') {
+        logToTerminal('error', `Port Selection Failed: ${err.message}`);
+      }
+    }
+  });
+
+  btnFlashBinary.addEventListener('click', async () => {
+    if (!selectedProject || !currentSerialPort) {
+      alert('Please select a valid COM port first.');
+      return;
+    }
+
+    isFlashing = true;
+    btnFlashBinary.disabled = true;
+    btnSelectPort.disabled = true;
+    flashProgressWrapper.classList.remove('hidden');
+    updateProgress(0, 'Fetching compiled binary from server storage...');
+
+    try {
+      logToTerminal('info', `Downloading protected compiled binary for project "${selectedProject.title}"...`);
+      const binaryRes = await fetch(`/api/projects/${selectedProject.id}/binary`);
+      if (!binaryRes.ok) throw new Error('Failed to download binary file from server.');
+
+      const baudRate = parseInt(selectBaudRate.value, 10);
+      const isUno = selectedProject.board_type.includes('uno') || selectedProject.board_type.includes('avr');
+
+      if (isUno) {
+        const hexText = await binaryRes.text();
+        logToTerminal('info', `Initializing STK500v1 serial protocol flasher at ${baudRate} baud...`);
+        const flasher = new window.STK500Flasher(
+          currentSerialPort,
+          (msg) => logToTerminal('info', msg),
+          (pct, status) => updateProgress(pct, status)
+        );
+        await flasher.flash(hexText);
+
+      } else {
+        const binBuffer = await binaryRes.arrayBuffer();
+        logToTerminal('info', `Initializing ESP Web Serial Flasher at ${baudRate} baud...`);
+        const flasher = new window.ESPFlasher(
+          currentSerialPort,
+          (msg) => logToTerminal('info', msg),
+          (pct, status) => updateProgress(pct, status)
+        );
+        await flasher.flash(binBuffer, selectedProject.board_type, baudRate);
+      }
+
+      logToTerminal('success', '🎉 Microcontroller successfully flashed without source code exposure!');
+
+    } catch (err) {
+      logToTerminal('error', `❌ Flashing Failed: ${err.message || err}`);
+      updateProgress(0, `Flashing Failed: ${err.message || err}`);
+    } finally {
+      isFlashing = false;
+      btnFlashBinary.disabled = false;
+      btnSelectPort.disabled = false;
+    }
+  });
+
+  function updateProgress(pct, text) {
+    flashProgressBar.style.width = `${pct}%`;
+    flashProgressText.textContent = `${pct}% - ${text}`;
+  }
+
+  function logToTerminal(type, text) {
+    const line = document.createElement('div');
+    line.className = `log-line ${type}`;
+    const timestamp = new Date().toLocaleTimeString();
+    line.textContent = `[${timestamp}] ${text}`;
+    flashTerminal.appendChild(line);
+    flashTerminal.scrollTop = flashTerminal.scrollHeight;
+  }
+
+  btnClearTerminal.addEventListener('click', () => {
+    flashTerminal.innerHTML = '';
+  });
+
+  // ==========================================
+  // ADMIN PANEL & COMPILATION PIPELINE
+  // ==========================================
+
+  async function checkServerHealth() {
+    try {
+      const res = await fetch('/api/health');
+      const data = await res.json();
+      if (!data.arduinoCliInstalled) {
+        logToAdminTerminal('warning', '⚠️ Server Warning: `arduino-cli` was not detected in host system PATH. Compilation uploads will fail until arduino-cli is installed on the server host.');
+      }
+    } catch (_) {}
+  }
+
+  uploadForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+
+    const title = uploadTitleInput.value.trim();
+    const description = uploadDescInput.value.trim();
+    const board_type = uploadBoardSelect.value;
+    const file = uploadFileInput.files[0];
+
+    if (!title || !description || !board_type || !file) {
+      alert('Please fill out all fields and select a valid .ino sketch file.');
+      return;
+    }
+
+    const formData = new FormData();
+    formData.append('title', title);
+    formData.append('description', description);
+    formData.append('board_type', board_type);
+    formData.append('ino_file', file);
+
+    uploadBtn.disabled = true;
+    uploadBtn.innerHTML = `<span class="spinner-sm"></span> Compiling with arduino-cli...`;
+    logToAdminTerminal('info', `🚀 Uploading sketch "${file.name}" and triggering background compilation for target "${board_type}"...`);
+
+    try {
+      const res = await fetch('/api/admin/upload-project', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${adminToken}` },
+        body: formData
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        logToAdminTerminal('error', `❌ Compilation Failed:\n${data.error}\n\nLogs:\n${data.logs || 'No log details available.'}`);
+        alert(`Compilation Error: ${data.error}`);
+        return;
+      }
+
+      logToAdminTerminal('success', `✅ Compilation & Publishing Successful!\nProject ID: ${data.project.id}\nBinary Type: .${data.project.file_type.toUpperCase()}\n\narduino-cli Logs:\n${data.logs}`);
+      alert('🎉 Project successfully compiled into binary and published to catalog! Raw source code was deleted.');
+
+      uploadForm.reset();
+      fetchProjectsAdmin();
+
+    } catch (err) {
+      logToAdminTerminal('error', `❌ Server Communication Error: ${err.message}`);
+    } finally {
+      uploadBtn.disabled = false;
+      uploadBtn.innerHTML = `⚙️ Compile Sketch & Publish Binary`;
+    }
+  });
+
+  async function fetchProjectsAdmin() {
+    try {
+      const res = await fetch('/api/projects');
+      const data = await res.json();
+      renderAdminProjectsTable(data);
+    } catch (err) {
+      adminProjectsList.innerHTML = `<tr><td colspan="5">Error loading projects: ${err.message}</td></tr>`;
+    }
+  }
+
+  function renderAdminProjectsTable(projects) {
+    if (projects.length === 0) {
+      adminProjectsList.innerHTML = `<tr><td colspan="5" class="text-center">No projects published yet. Upload your first .ino sketch above.</td></tr>`;
+      return;
+    }
+
+    adminProjectsList.innerHTML = projects.map(p => `
+      <tr>
+        <td><strong>${escapeHtml(p.title)}</strong></td>
+        <td><span class="board-pill ${getBoardBadgeClass(p.board_type)}">${formatBoardName(p.board_type)}</span></td>
+        <td>.${p.file_type.toUpperCase()}</td>
+        <td>${new Date(p.created_at).toLocaleString()}</td>
+        <td>
+          <button class="btn btn-danger btn-sm delete-project-btn" data-id="${p.id}">🗑️ Delete</button>
+        </td>
+      </tr>
+    `).join('');
+
+    document.querySelectorAll('.delete-project-btn').forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        const id = e.currentTarget.getAttribute('data-id');
+        if (confirm('Are you sure you want to delete this project and its binary file?')) {
+          await deleteProject(id);
+        }
+      });
+    });
+  }
+
+  async function deleteProject(id) {
+    try {
+      const res = await fetch(`/api/admin/projects/${id}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${adminToken}` }
+      });
+      if (!res.ok) throw new Error('Failed to delete project.');
+      fetchProjectsAdmin();
+      logToAdminTerminal('info', `Deleted project record ${id}`);
+    } catch (err) {
+      alert(`Delete Error: ${err.message}`);
+    }
+  }
+
+  function logToAdminTerminal(type, text) {
+    const line = document.createElement('div');
+    line.className = `log-line ${type}`;
+    const timestamp = new Date().toLocaleTimeString();
+    line.textContent = `[${timestamp}] ${text}`;
+    adminTerminal.appendChild(line);
+    adminTerminal.scrollTop = adminTerminal.scrollHeight;
+  }
+
+  // Initial load
+  fetchProjects();
+});

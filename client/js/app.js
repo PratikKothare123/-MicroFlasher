@@ -97,7 +97,6 @@ document.addEventListener('DOMContentLoaded', () => {
   let monPort = null;
   let monReader = null;
   let monKeepReading = false;
-  let monClosedPromise = null;
 
   // Check Web Serial API Support
   checkWebSerialSupport();
@@ -292,10 +291,11 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   function openEditProjectModal(project) {
+    if (!project) return;
     editProjectIdInput.value = project.id;
-    editTitleInput.value = project.title;
-    editDescInput.value = project.description;
-    editBoardSelect.value = project.board_type;
+    editTitleInput.value = project.title || '';
+    editDescInput.value = project.description || '';
+    editBoardSelect.value = project.board_type || 'esp32:esp32:esp32';
     editProjectAlert.classList.add('hidden');
     editProjectModal.classList.remove('hidden');
   }
@@ -336,7 +336,7 @@ document.addEventListener('DOMContentLoaded', () => {
         editProjectModal.classList.add('hidden');
         fetchProjectsAdmin();
         fetchProjects();
-      }, 1200);
+      }, 1000);
 
     } catch (err) {
       editProjectAlert.className = 'alert-box error';
@@ -467,6 +467,12 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     try {
+      // Disconnect Serial Monitor if currently active to avoid COM port locks
+      if (monPort) {
+        await disconnectSerialMonitor();
+        logToTerminal('info', 'ℹ️ Automatically disconnected Serial Monitor to allow Flasher port access.');
+      }
+
       currentSerialPort = await navigator.serial.requestPort();
       const info = currentSerialPort.getInfo();
       const portText = info.usbVendorId ? `USB Device (VID: 0x${info.usbVendorId.toString(16).padStart(4, '0')})` : 'Selected Serial COM Port';
@@ -485,6 +491,12 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!selectedProject || !currentSerialPort) {
       alert('Please select a valid COM port first.');
       return;
+    }
+
+    // Auto disconnect serial monitor if running
+    if (monPort) {
+      await disconnectSerialMonitor();
+      logToTerminal('info', 'ℹ️ Disconnected Serial Monitor to free COM port for flashing.');
     }
 
     isFlashing = true;
@@ -525,8 +537,12 @@ document.addEventListener('DOMContentLoaded', () => {
       logToTerminal('success', '🎉 Microcontroller successfully flashed without source code exposure!');
 
     } catch (err) {
-      logToTerminal('error', `❌ Flashing Failed: ${err.message || err}`);
-      updateProgress(0, `Flashing Failed: ${err.message || err}`);
+      let errMsg = err.message || String(err);
+      if (errMsg.includes('Failed to open serial port') || errMsg.includes('Failed to execute \'open\'')) {
+        errMsg = `Failed to open serial port: The COM port is currently open in another window, tab, or program (e.g. Serial Monitor or Arduino IDE). Please disconnect it or close other serial tools and try again.`;
+      }
+      logToTerminal('error', `❌ Flashing Failed: ${errMsg}`);
+      updateProgress(0, `Flashing Failed: ${errMsg}`);
     } finally {
       isFlashing = false;
       btnFlashBinary.disabled = false;
@@ -563,9 +579,20 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     try {
+      // Clear flasher port selection to prevent port locks
+      currentSerialPort = null;
+
       monPort = await navigator.serial.requestPort();
       const baudRate = parseInt(monSelectBaud.value, 10);
-      await monPort.open({ baudRate });
+
+      try {
+        await monPort.open({ baudRate });
+      } catch (openErr) {
+        if (openErr.message.includes('Failed to open serial port') || openErr.message.includes('Failed to execute \'open\'')) {
+          throw new Error('The selected COM port is currently open in another program (e.g. Arduino IDE, Flasher tool, or another tab). Please close other serial connections and try again.');
+        }
+        throw openErr;
+      }
 
       const info = monPort.getInfo();
       const portText = info.usbVendorId ? `USB Device (VID: 0x${info.usbVendorId.toString(16).padStart(4, '0')})` : 'Connected COM Port';
@@ -624,7 +651,7 @@ document.addEventListener('DOMContentLoaded', () => {
     while (monPort && monPort.readable && monKeepReading) {
       try {
         const textDecoder = new TextDecoderStream();
-        monClosedPromise = monPort.readable.pipeTo(textDecoder.writable);
+        monPort.readable.pipeTo(textDecoder.writable).catch(() => {});
         monReader = textDecoder.readable.getReader();
 
         let partialLine = '';
@@ -655,7 +682,6 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  // Send Serial Command Handler
   async function sendSerialCommand() {
     if (!monPort || !monPort.writable) {
       alert('Serial port is not connected.');
@@ -774,6 +800,7 @@ document.addEventListener('DOMContentLoaded', () => {
     try {
       const res = await fetch('/api/projects');
       const data = await res.json();
+      projectsList = data; // Assign data to global projectsList
       renderAdminProjectsTable(data);
     } catch (err) {
       adminProjectsList.innerHTML = `<tr><td colspan="5">Error loading projects: ${err.message}</td></tr>`;
@@ -781,6 +808,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function renderAdminProjectsTable(projects) {
+    projectsList = projects; // Update projectsList
     if (projects.length === 0) {
       adminProjectsList.innerHTML = `<tr><td colspan="5" class="text-center">No projects published yet. Upload your first sketch or binary above.</td></tr>`;
       return;
@@ -807,8 +835,21 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (editBtn) {
       const id = editBtn.getAttribute('data-id');
-      const proj = projectsList.find(p => p.id === id);
-      if (proj) openEditProjectModal(proj);
+      let proj = projectsList.find(p => p.id === id);
+      
+      if (!proj) {
+        try {
+          const res = await fetch('/api/projects');
+          projectsList = await res.json();
+          proj = projectsList.find(p => p.id === id);
+        } catch (_) {}
+      }
+
+      if (proj) {
+        openEditProjectModal(proj);
+      } else {
+        alert('Could not find project details for editing.');
+      }
     } else if (deleteBtn) {
       const id = deleteBtn.getAttribute('data-id');
       if (confirm('Are you sure you want to delete this project and its binary file?')) {

@@ -14,7 +14,6 @@ class ESPFlasher {
    * Dynamically loads ESPLoader and Transport from local bundle
    */
   async loadEsptoolModule() {
-    // Check window object first (in case pre-loaded)
     if (window.esptooljs && window.esptooljs.ESPLoader) {
       return window.esptooljs;
     }
@@ -22,7 +21,6 @@ class ESPFlasher {
       return { ESPLoader: window.ESPLoader, Transport: window.Transport };
     }
 
-    // Dynamic import of local bundle
     try {
       const mod = await import('../lib/esptool-bundle.js');
       return mod;
@@ -38,9 +36,9 @@ class ESPFlasher {
    * @param {ArrayBuffer} binBuffer - Raw binary file data
    * @param {string} boardType - FQBN board identifier (e.g. esp32:esp32:esp32, esp8266:esp8266:generic)
    * @param {number} baudRate - Serial baud rate (default 115200)
-   * @param {number} flashAddress - Start flash offset address (default 0x0)
+   * @param {number|null} customOffset - Manual flash offset if provided
    */
-  async flash(binBuffer, boardType = 'esp32', baudRate = 115200, flashAddress = 0x0) {
+  async flash(binBuffer, boardType = 'esp32', baudRate = 115200, customOffset = null) {
     this.log('🚀 Preparing ESP Web Serial Flasher...');
     this.progress(5, 'Loading esptool module...');
 
@@ -52,7 +50,6 @@ class ESPFlasher {
 
     const transport = new TransportClass(this.port);
 
-    // Terminal Logger Adapter for esptool-js
     const terminalAdapter = {
       clean: () => {},
       writeLine: (data) => this.log(data),
@@ -63,27 +60,41 @@ class ESPFlasher {
       this.progress(10, 'Connecting to ESP chip (Auto-detecting baud)...');
       this.log('⚡ Connecting to ESP microcontroller...');
 
-      // Instantiate ESPLoader
       this.espLoader = new ESPLoaderClass({
         transport: transport,
         baudrate: baudRate,
         terminal: terminalAdapter
       });
 
-      // Handshake and detect ESP chip type (ESP32, ESP32-S2, ESP32-C3, ESP8266, etc.)
       const chipName = await this.espLoader.main();
       this.log(`✅ ESP Board Connected! Chip Type: ${chipName}`);
       this.progress(25, `Chip identified: ${chipName}. Erasing/Preparing flash...`);
 
-      // Convert ArrayBuffer binary into binary string for esptool-js
       const uint8Arr = new Uint8Array(binBuffer);
       let binString = '';
       for (let i = 0; i < uint8Arr.length; i++) {
         binString += String.fromCharCode(uint8Arr[i]);
       }
 
-      // Default offset: 0x0 for merged binary, or 0x0 for standard app binary on ESP32
-      const offset = flashAddress || 0x0;
+      // Automatically determine correct ESP memory flash offset address
+      // ESP32 app binary -> 0x10000
+      // ESP32 merged factory image (> 1 MB) -> 0x0
+      // ESP8266 -> 0x0
+      let offset = 0x0;
+
+      if (customOffset !== null && customOffset !== undefined) {
+        offset = customOffset;
+      } else if (boardType.includes('esp32')) {
+        if (binBuffer.byteLength > 1024 * 1024) {
+          offset = 0x0; // Merged factory image (includes bootloader + app)
+          this.log('💡 Detected Merged Factory Image (>1MB) -> Flashing to address 0x0');
+        } else {
+          offset = 0x10000; // Standard ESP32 application binary
+          this.log('💡 Detected Standard ESP32 Application Binary -> Flashing to address 0x10000');
+        }
+      } else {
+        offset = 0x0; // ESP8266 default
+      }
 
       const fileArray = [
         {
@@ -92,10 +103,9 @@ class ESPFlasher {
         }
       ];
 
-      this.log(`📦 Flashing binary payload (${(binBuffer.byteLength / 1024).toFixed(1)} KB) to address 0x${offset.toString(16)}...`);
+      this.log(`📦 Flashing binary payload (${(binBuffer.byteLength / 1024).toFixed(1)} KB) to target offset address 0x${offset.toString(16)}...`);
       this.progress(30, 'Writing flash binary blocks...');
 
-      // Perform flash write with progress callback
       await this.espLoader.writeFlash({
         fileArray: fileArray,
         flashSize: 'keep',
@@ -110,7 +120,6 @@ class ESPFlasher {
       this.progress(98, 'Resetting ESP chip into application mode...');
       this.log('🔄 Hard resetting ESP chip to execute new firmware...');
       
-      // Toggle hard reset signal
       try {
         await this.espLoader.hardReset();
       } catch (e) {

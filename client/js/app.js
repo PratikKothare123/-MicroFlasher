@@ -798,24 +798,24 @@ document.addEventListener('DOMContentLoaded', () => {
         </td>
       </tr>
     `).join('');
-
-    document.querySelectorAll('.edit-project-btn').forEach(btn => {
-      btn.addEventListener('click', (e) => {
-        const id = e.currentTarget.getAttribute('data-id');
-        const proj = projects.find(p => p.id === id);
-        if (proj) openEditProjectModal(proj);
-      });
-    });
-
-    document.querySelectorAll('.delete-project-btn').forEach(btn => {
-      btn.addEventListener('click', async (e) => {
-        const id = e.currentTarget.getAttribute('data-id');
-        if (confirm('Are you sure you want to delete this project and its binary file?')) {
-          await deleteProject(id);
-        }
-      });
-    });
   }
+
+  // Event Delegation for Admin Projects Table Actions
+  adminProjectsList.addEventListener('click', async (e) => {
+    const editBtn = e.target.closest('.edit-project-btn');
+    const deleteBtn = e.target.closest('.delete-project-btn');
+
+    if (editBtn) {
+      const id = editBtn.getAttribute('data-id');
+      const proj = projectsList.find(p => p.id === id);
+      if (proj) openEditProjectModal(proj);
+    } else if (deleteBtn) {
+      const id = deleteBtn.getAttribute('data-id');
+      if (confirm('Are you sure you want to delete this project and its binary file?')) {
+        await deleteProject(id);
+      }
+    }
+  });
 
   async function deleteProject(id) {
     try {

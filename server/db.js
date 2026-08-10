@@ -15,7 +15,7 @@ const dbPath = path.join(dataDir, 'flasher.sqlite');
 let db = null;
 let useFallbackDb = false;
 
-// In-Memory / JSON Fallback Store if SQLite native module cannot load
+// In-Memory / Global Fallback Store for Serverless Vercel
 const fallbackStore = {
   projects: [],
   admins: []
@@ -53,9 +53,13 @@ try {
           board_type TEXT NOT NULL,
           bin_file_path TEXT NOT NULL,
           file_type TEXT NOT NULL DEFAULT 'bin',
+          binary_data TEXT,
           created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
-      `);
+      `, () => {
+        // Migration check for binary_data column
+        db.run(`ALTER TABLE projects ADD COLUMN binary_data TEXT`, () => {});
+      });
 
       db.run(`
         CREATE TABLE IF NOT EXISTS admins (
@@ -95,7 +99,15 @@ const dbAsync = {
 
     // Fallback handler
     if (query.includes('projects')) {
-      return [...fallbackStore.projects].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+      return fallbackStore.projects.map(p => ({
+        id: p.id,
+        title: p.title,
+        description: p.description,
+        board_type: p.board_type,
+        bin_file_path: p.bin_file_path,
+        file_type: p.file_type,
+        created_at: p.created_at
+      })).sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
     }
     if (query.includes('admins')) {
       return [...fallbackStore.admins];
@@ -148,6 +160,7 @@ const dbAsync = {
         board_type: params[3],
         bin_file_path: params[4],
         file_type: params[5],
+        binary_data: params[6] || null,
         created_at: new Date().toISOString()
       });
     } else if (query.startsWith('DELETE FROM projects')) {

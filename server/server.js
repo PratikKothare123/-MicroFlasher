@@ -281,17 +281,25 @@ app.get('/api/projects/:id/binary', async (req, res) => {
       return res.status(404).json({ error: 'Project not found.' });
     }
 
+    const filename = `${project.title.replace(/[^a-z0-9_-]/gi, '_')}.${project.file_type}`;
     const binaryPath = path.join(BINARIES_DIR, project.bin_file_path);
-    if (!fs.existsSync(binaryPath)) {
-      return res.status(404).json({ error: 'Compiled binary file is missing from server storage.' });
+
+    if (fs.existsSync(binaryPath)) {
+      res.setHeader('Content-Type', 'application/octet-stream');
+      res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+      const fileStream = fs.createReadStream(binaryPath);
+      return fileStream.pipe(res);
     }
 
-    const filename = `${project.title.replace(/[^a-z0-9_-]/gi, '_')}.${project.file_type}`;
-    res.setHeader('Content-Type', 'application/octet-stream');
-    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-    
-    const fileStream = fs.createReadStream(binaryPath);
-    fileStream.pipe(res);
+    if (project.binary_data) {
+      const buffer = Buffer.from(project.binary_data, 'base64');
+      res.setHeader('Content-Type', 'application/octet-stream');
+      res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+      res.setHeader('Content-Length', buffer.length);
+      return res.send(buffer);
+    }
+
+    return res.status(404).json({ error: 'Compiled binary file is missing from server storage.' });
   } catch (error) {
     console.error('Error serving binary:', error);
     return res.status(500).json({ error: 'Failed to download binary file.' });

@@ -48,6 +48,11 @@ class ESPFlasher {
       throw new Error('Failed to resolve ESPLoader or Transport class from esptool module.');
     }
 
+    // Ensure port is closed before esptool-js opens it
+    if (this.port.readable || this.port.writable) {
+      try { await this.port.close(); } catch (_) {}
+    }
+
     const transport = new TransportClass(this.port);
 
     const terminalAdapter = {

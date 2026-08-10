@@ -1,16 +1,14 @@
 /**
  * Main Application Client Logic
- * Handles API requests, Web Serial port connections, Admin Authentication, Project Editing, Web Serial Monitor, and Flasher dispatching
+ * Handles API requests, Web Serial port connections, Admin Authentication, and Flasher dispatching
  */
 
 document.addEventListener('DOMContentLoaded', () => {
   // Navigation & View Elements
   const tabUserBtn = document.getElementById('tab-user');
-  const tabMonitorBtn = document.getElementById('tab-monitor');
   const tabAdminBtn = document.getElementById('tab-admin');
   
   const viewUser = document.getElementById('view-user');
-  const viewMonitor = document.getElementById('view-monitor');
   const viewAdmin = document.getElementById('view-admin');
   const serialStatusBadge = document.getElementById('serial-status-badge');
 
@@ -35,18 +33,6 @@ document.addEventListener('DOMContentLoaded', () => {
   const flashTerminal = document.getElementById('flash-terminal');
   const btnClearTerminal = document.getElementById('btn-clear-terminal');
 
-  // Serial Monitor Elements
-  const monBtnConnect = document.getElementById('mon-btn-connect');
-  const monBtnDisconnect = document.getElementById('mon-btn-disconnect');
-  const monPortLabel = document.getElementById('mon-port-label');
-  const monSelectBaud = document.getElementById('mon-select-baud');
-  const monTerminalBody = document.getElementById('mon-terminal-body');
-  const monAutoscrollChk = document.getElementById('mon-autoscroll-chk');
-  const monBtnClear = document.getElementById('mon-btn-clear');
-  const monInputText = document.getElementById('mon-input-text');
-  const monSelectLineEnding = document.getElementById('mon-select-line-ending');
-  const monBtnSend = document.getElementById('mon-btn-send');
-
   // Admin Auth & Panel Elements
   const adminLoginCard = document.getElementById('admin-login-card');
   const adminLoginForm = document.getElementById('admin-login-form');
@@ -67,15 +53,6 @@ document.addEventListener('DOMContentLoaded', () => {
   const passConfirmInput = document.getElementById('pass-confirm');
   const changePassAlert = document.getElementById('change-pass-alert');
 
-  const editProjectModal = document.getElementById('edit-project-modal');
-  const editModalCloseBtn = document.getElementById('edit-modal-close-btn');
-  const editProjectForm = document.getElementById('edit-project-form');
-  const editProjectIdInput = document.getElementById('edit-project-id');
-  const editTitleInput = document.getElementById('edit-title');
-  const editDescInput = document.getElementById('edit-desc');
-  const editBoardSelect = document.getElementById('edit-board');
-  const editProjectAlert = document.getElementById('edit-project-alert');
-
   const uploadForm = document.getElementById('upload-form');
   const uploadTitleInput = document.getElementById('upload-title');
   const uploadDescInput = document.getElementById('upload-desc');
@@ -93,30 +70,21 @@ document.addEventListener('DOMContentLoaded', () => {
   let adminToken = localStorage.getItem('adminToken') || null;
   let adminUsername = localStorage.getItem('adminUsername') || null;
 
-  // Serial Monitor State Variables
-  let monPort = null;
-  let monReader = null;
-  let monKeepReading = false;
-
   // Check Web Serial API Support
   checkWebSerialSupport();
 
   // Navigation Tab Event Listeners
   tabUserBtn.addEventListener('click', () => switchTab('user'));
-  if (tabMonitorBtn) tabMonitorBtn.addEventListener('click', () => switchTab('monitor'));
   tabAdminBtn.addEventListener('click', () => switchTab('admin'));
 
   function switchTab(tab) {
-    [tabUserBtn, tabMonitorBtn, tabAdminBtn].forEach(btn => btn && btn.classList.remove('active'));
-    [viewUser, viewMonitor, viewAdmin].forEach(view => view && view.classList.add('hidden'));
+    [tabUserBtn, tabAdminBtn].forEach(btn => btn && btn.classList.remove('active'));
+    [viewUser, viewAdmin].forEach(view => view && view.classList.add('hidden'));
 
     if (tab === 'user') {
       tabUserBtn.classList.add('active');
       viewUser.classList.remove('hidden');
       fetchProjects();
-    } else if (tab === 'monitor') {
-      tabMonitorBtn.classList.add('active');
-      viewMonitor.classList.remove('hidden');
     } else {
       tabAdminBtn.classList.add('active');
       viewAdmin.classList.remove('hidden');
@@ -285,66 +253,6 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  // Edit Project Modal Handlers
-  editModalCloseBtn.addEventListener('click', () => {
-    editProjectModal.classList.add('hidden');
-  });
-
-  function openEditProjectModal(project) {
-    if (!project) return;
-    editProjectIdInput.value = project.id;
-    editTitleInput.value = project.title || '';
-    editDescInput.value = project.description || '';
-    editBoardSelect.value = project.board_type || 'esp32:esp32:esp32';
-    editProjectAlert.classList.add('hidden');
-    editProjectModal.classList.remove('hidden');
-  }
-
-  editProjectForm.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const id = editProjectIdInput.value;
-    const title = editTitleInput.value.trim();
-    const description = editDescInput.value.trim();
-    const board_type = editBoardSelect.value;
-
-    editProjectAlert.classList.add('hidden');
-
-    try {
-      const res = await fetch(`/api/admin/projects/${id}`, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${adminToken}`
-        },
-        body: JSON.stringify({ title, description, board_type })
-      });
-
-      const data = await res.json();
-
-      if (!res.ok) {
-        editProjectAlert.className = 'alert-box error';
-        editProjectAlert.textContent = data.error || 'Failed to update project.';
-        editProjectAlert.classList.remove('hidden');
-        return;
-      }
-
-      editProjectAlert.className = 'alert-box success';
-      editProjectAlert.textContent = '🎉 Project updated successfully!';
-      editProjectAlert.classList.remove('hidden');
-
-      setTimeout(() => {
-        editProjectModal.classList.add('hidden');
-        fetchProjectsAdmin();
-        fetchProjects();
-      }, 1000);
-
-    } catch (err) {
-      editProjectAlert.className = 'alert-box error';
-      editProjectAlert.textContent = 'Error: ' + err.message;
-      editProjectAlert.classList.remove('hidden');
-    }
-  });
-
   // ==========================================
   // CATALOG & USER DASHBOARD
   // ==========================================
@@ -442,10 +350,20 @@ document.addEventListener('DOMContentLoaded', () => {
     flashModal.classList.remove('hidden');
   }
 
-  function closeFlashModal() {
+  async function closeFlashModal() {
     if (isFlashing) {
       if (!confirm('Flashing is currently in progress. Are you sure you want to exit?')) return;
     }
+
+    if (currentSerialPort) {
+      try {
+        if (currentSerialPort.readable || currentSerialPort.writable) {
+          await currentSerialPort.close();
+        }
+      } catch (_) {}
+      currentSerialPort = null;
+    }
+
     flashModal.classList.add('hidden');
     selectedProject = null;
   }
@@ -467,10 +385,12 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     try {
-      // Disconnect Serial Monitor if currently active to avoid COM port locks
-      if (monPort) {
-        await disconnectSerialMonitor();
-        logToTerminal('info', 'ℹ️ Automatically disconnected Serial Monitor to allow Flasher port access.');
+      if (currentSerialPort) {
+        try {
+          if (currentSerialPort.readable || currentSerialPort.writable) {
+            await currentSerialPort.close();
+          }
+        } catch (_) {}
       }
 
       currentSerialPort = await navigator.serial.requestPort();
@@ -491,12 +411,6 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!selectedProject || !currentSerialPort) {
       alert('Please select a valid COM port first.');
       return;
-    }
-
-    // Auto disconnect serial monitor if running
-    if (monPort) {
-      await disconnectSerialMonitor();
-      logToTerminal('info', 'ℹ️ Disconnected Serial Monitor to free COM port for flashing.');
     }
 
     isFlashing = true;
@@ -537,12 +451,8 @@ document.addEventListener('DOMContentLoaded', () => {
       logToTerminal('success', '🎉 Microcontroller successfully flashed without source code exposure!');
 
     } catch (err) {
-      let errMsg = err.message || String(err);
-      if (errMsg.includes('Failed to open serial port') || errMsg.includes('Failed to execute \'open\'')) {
-        errMsg = `Failed to open serial port: The COM port is currently open in another window, tab, or program (e.g. Serial Monitor or Arduino IDE). Please disconnect it or close other serial tools and try again.`;
-      }
-      logToTerminal('error', `❌ Flashing Failed: ${errMsg}`);
-      updateProgress(0, `Flashing Failed: ${errMsg}`);
+      logToTerminal('error', `❌ Flashing Failed: ${err.message || err}`);
+      updateProgress(0, `Flashing Failed: ${err.message || err}`);
     } finally {
       isFlashing = false;
       btnFlashBinary.disabled = false;
@@ -567,168 +477,6 @@ document.addEventListener('DOMContentLoaded', () => {
   btnClearTerminal.addEventListener('click', () => {
     flashTerminal.innerHTML = '';
   });
-
-  // ==========================================
-  // WEB SERIAL MONITOR CONTROLLER
-  // ==========================================
-
-  monBtnConnect.addEventListener('click', async () => {
-    if (!('serial' in navigator)) {
-      alert('Web Serial API is not supported in this browser.');
-      return;
-    }
-
-    try {
-      // Clear flasher port selection to prevent port locks
-      currentSerialPort = null;
-
-      monPort = await navigator.serial.requestPort();
-      const baudRate = parseInt(monSelectBaud.value, 10);
-
-      try {
-        await monPort.open({ baudRate });
-      } catch (openErr) {
-        if (openErr.message.includes('Failed to open serial port') || openErr.message.includes('Failed to execute \'open\'')) {
-          throw new Error('The selected COM port is currently open in another program (e.g. Arduino IDE, Flasher tool, or another tab). Please close other serial connections and try again.');
-        }
-        throw openErr;
-      }
-
-      const info = monPort.getInfo();
-      const portText = info.usbVendorId ? `USB Device (VID: 0x${info.usbVendorId.toString(16).padStart(4, '0')})` : 'Connected COM Port';
-      
-      monPortLabel.textContent = `🟢 ${portText} @ ${baudRate} Baud`;
-      monPortLabel.classList.add('connected');
-
-      monBtnConnect.classList.add('hidden');
-      monBtnDisconnect.classList.remove('hidden');
-      monInputText.disabled = false;
-      monBtnSend.disabled = false;
-
-      logToSerialTerminal('success', `🔌 Connected to ${portText} at ${baudRate} baud.`);
-
-      monKeepReading = true;
-      readSerialStream();
-
-    } catch (err) {
-      if (err.name !== 'NotFoundError') {
-        logToSerialTerminal('error', `Serial Connection Error: ${err.message}`);
-      }
-    }
-  });
-
-  monBtnDisconnect.addEventListener('click', async () => {
-    await disconnectSerialMonitor();
-  });
-
-  async function disconnectSerialMonitor() {
-    monKeepReading = false;
-    if (monReader) {
-      try {
-        await monReader.cancel();
-      } catch (_) {}
-    }
-
-    if (monPort) {
-      try {
-        await monPort.close();
-      } catch (_) {}
-      monPort = null;
-    }
-
-    monPortLabel.textContent = 'No port connected';
-    monPortLabel.classList.remove('connected');
-
-    monBtnConnect.classList.remove('hidden');
-    monBtnDisconnect.classList.add('hidden');
-    monInputText.disabled = true;
-    monBtnSend.disabled = true;
-
-    logToSerialTerminal('info', 'Disconnected from serial port.');
-  }
-
-  async function readSerialStream() {
-    while (monPort && monPort.readable && monKeepReading) {
-      try {
-        const textDecoder = new TextDecoderStream();
-        monPort.readable.pipeTo(textDecoder.writable).catch(() => {});
-        monReader = textDecoder.readable.getReader();
-
-        let partialLine = '';
-
-        while (true) {
-          const { value, done } = await monReader.read();
-          if (done) break;
-          if (value) {
-            partialLine += value;
-            const lines = partialLine.split('\n');
-            partialLine = lines.pop(); // Keep unfinished line fragment
-
-            lines.forEach(lineText => {
-              logToSerialTerminal('serial', lineText.replace('\r', ''));
-            });
-          }
-        }
-      } catch (err) {
-        if (monKeepReading) {
-          logToSerialTerminal('error', `Serial Read Error: ${err.message}`);
-        }
-      } finally {
-        if (monReader) {
-          monReader.releaseLock();
-          monReader = null;
-        }
-      }
-    }
-  }
-
-  async function sendSerialCommand() {
-    if (!monPort || !monPort.writable) {
-      alert('Serial port is not connected.');
-      return;
-    }
-
-    let payload = monInputText.value;
-    if (!payload && payload !== '') return;
-
-    const ending = monSelectLineEnding.value.replace('\\r', '\r').replace('\\n', '\n');
-    payload += ending;
-
-    try {
-      const encoder = new TextEncoder();
-      const writer = monPort.writable.getWriter();
-      await writer.write(encoder.encode(payload));
-      writer.releaseLock();
-
-      logToSerialTerminal('info', `📤 Sent: ${monInputText.value}`);
-      monInputText.value = '';
-
-    } catch (err) {
-      logToSerialTerminal('error', `Failed to send serial data: ${err.message}`);
-    }
-  }
-
-  monBtnSend.addEventListener('click', sendSerialCommand);
-  monInputText.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') sendSerialCommand();
-  });
-
-  monBtnClear.addEventListener('click', () => {
-    monTerminalBody.innerHTML = '';
-  });
-
-  function logToSerialTerminal(type, text) {
-    if (!text && text !== '') return;
-    const line = document.createElement('div');
-    line.className = `log-line ${type}`;
-    const timestamp = new Date().toLocaleTimeString();
-    line.textContent = `[${timestamp}] ${text}`;
-    monTerminalBody.appendChild(line);
-
-    if (monAutoscrollChk.checked) {
-      monTerminalBody.scrollTop = monTerminalBody.scrollHeight;
-    }
-  }
 
   // ==========================================
   // ADMIN PANEL & COMPILATION PIPELINE
@@ -800,7 +548,6 @@ document.addEventListener('DOMContentLoaded', () => {
     try {
       const res = await fetch('/api/projects');
       const data = await res.json();
-      projectsList = data; // Assign data to global projectsList
       renderAdminProjectsTable(data);
     } catch (err) {
       adminProjectsList.innerHTML = `<tr><td colspan="5">Error loading projects: ${err.message}</td></tr>`;
@@ -808,7 +555,6 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function renderAdminProjectsTable(projects) {
-    projectsList = projects; // Update projectsList
     if (projects.length === 0) {
       adminProjectsList.innerHTML = `<tr><td colspan="5" class="text-center">No projects published yet. Upload your first sketch or binary above.</td></tr>`;
       return;
@@ -821,42 +567,20 @@ document.addEventListener('DOMContentLoaded', () => {
         <td>.${p.file_type.toUpperCase()}</td>
         <td>${new Date(p.created_at).toLocaleString()}</td>
         <td>
-          <button class="btn btn-secondary btn-sm edit-project-btn" data-id="${p.id}" style="margin-right: 0.3rem;">✏️ Edit</button>
           <button class="btn btn-danger btn-sm delete-project-btn" data-id="${p.id}">🗑️ Delete</button>
         </td>
       </tr>
     `).join('');
+
+    document.querySelectorAll('.delete-project-btn').forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        const id = e.currentTarget.getAttribute('data-id');
+        if (confirm('Are you sure you want to delete this project and its binary file?')) {
+          await deleteProject(id);
+        }
+      });
+    });
   }
-
-  // Event Delegation for Admin Projects Table Actions
-  adminProjectsList.addEventListener('click', async (e) => {
-    const editBtn = e.target.closest('.edit-project-btn');
-    const deleteBtn = e.target.closest('.delete-project-btn');
-
-    if (editBtn) {
-      const id = editBtn.getAttribute('data-id');
-      let proj = projectsList.find(p => p.id === id);
-      
-      if (!proj) {
-        try {
-          const res = await fetch('/api/projects');
-          projectsList = await res.json();
-          proj = projectsList.find(p => p.id === id);
-        } catch (_) {}
-      }
-
-      if (proj) {
-        openEditProjectModal(proj);
-      } else {
-        alert('Could not find project details for editing.');
-      }
-    } else if (deleteBtn) {
-      const id = deleteBtn.getAttribute('data-id');
-      if (confirm('Are you sure you want to delete this project and its binary file?')) {
-        await deleteProject(id);
-      }
-    }
-  });
 
   async function deleteProject(id) {
     try {

@@ -130,7 +130,11 @@ class STK500Flasher {
     this.log(`📄 Parsed Intel HEX: ${totalBytes} bytes to flash.`);
     this.progress(5, 'Connecting to Optiboot...');
 
-    // Open Serial Port at 115200 Baud Rate
+    // Ensure port is closed before opening at STK500 baud rate
+    if (this.port.readable || this.port.writable) {
+      try { await this.port.close(); } catch (_) {}
+    }
+
     try {
       await this.port.open({ baudRate: 115200 });
     } catch (e) {

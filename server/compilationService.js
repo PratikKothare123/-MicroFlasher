@@ -84,7 +84,8 @@ async function compileSketch(tempInoPath, originalFilename, boardType) {
   fs.mkdirSync(buildOutDir, { recursive: true });
 
   const cliCmd = getArduinoCliCmd();
-  const command = `"${cliCmd}" compile --fqbn "${boardType}" --output-dir "${buildOutDir}" "${sketchDir}"`;
+  const additionalUrls = 'https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json,http://arduino.esp8266.com/stable/package_esp8266com_index.json';
+  const command = `"${cliCmd}" compile --additional-urls "${additionalUrls}" --fqbn "${boardType}" --output-dir "${buildOutDir}" "${sketchDir}"`;
 
   console.log(`🚀 Executing: ${command}`);
 

@@ -1,9 +1,12 @@
+
+const path = require('path');
+require('dotenv').config();
+require('dotenv').config({ path: path.resolve(__dirname, '.env') });
+
 const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
-const path = require('path');
 const fs = require('fs');
-require('dotenv').config();
 
 const { dbAsync } = require('./db');
 const { compileSketch, checkArduinoCliAvailable, BINARIES_DIR } = require('./compilationService');
@@ -188,10 +191,20 @@ app.post('/api/admin/upload-project', authenticateAdmin, upload.single('ino_file
       logs = result.logs;
     }
 
-    // Save project metadata to SQLite database
+    let binaryData = null;
+    const finalBinPath = path.join(BINARIES_DIR, binFilePath);
+    if (fs.existsSync(finalBinPath)) {
+      try {
+        binaryData = fs.readFileSync(finalBinPath).toString('base64');
+      } catch (err) {
+        console.warn('⚠️ Could not read binary for DB storage:', err.message);
+      }
+    }
+
+    // Save project metadata and binary content to PostgreSQL database
     await dbAsync.run(
-      `INSERT INTO projects (id, title, description, board_type, bin_file_path, file_type) VALUES (?, ?, ?, ?, ?, ?)`,
-      [projectId, title, description, board_type, binFilePath, fileType]
+      `INSERT INTO projects (id, title, description, board_type, bin_file_path, file_type, binary_data) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [projectId, title, description, board_type, binFilePath, fileType, binaryData]
     );
 
     console.log(`🎉 Project successfully published: ${projectId}`);

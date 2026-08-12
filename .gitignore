@@ -2,3 +2,8 @@ node_modules/
 .env
 .DS_Store
 *.log
+*.sqlite
+server/data/
+server/uploads/temp/
+server/uploads/binaries/
+

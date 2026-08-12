@@ -1,179 +1,181 @@
 const path = require('path');
-const fs = require('fs');
-const os = require('os');
+require('dotenv').config();
+require('dotenv').config({ path: path.resolve(__dirname, '.env') });
+
+const postgres = require('postgres');
 const bcrypt = require('bcryptjs');
 
-const isVercel = !!process.env.VERCEL;
-const dataDir = isVercel ? os.tmpdir() : path.join(__dirname, 'data');
+console.log('DATABASE_URL loaded:', !!process.env.DATABASE_URL);
 
-if (!fs.existsSync(dataDir)) {
-  try { fs.mkdirSync(dataDir, { recursive: true }); } catch (_) {}
+const connectionString = process.env.DATABASE_URL;
+
+if (!connectionString) {
+  throw new Error('DATABASE_URL is not set in environment variables');
 }
 
-const dbPath = path.join(dataDir, 'flasher.sqlite');
+// Supabase Transaction Pooler
+const sql = postgres(connectionString, {
+  prepare: false,
+  ssl: 'require',
+  max: 10,
+  idle_timeout: 20,
+  connect_timeout: 10,
+  onnotice: () => {}
+});
 
-let db = null;
-let useFallbackDb = false;
+// Convert SQLite-style ? placeholders to PostgreSQL $1, $2, $3...
+function convertPlaceholders(query) {
+  let index = 0;
 
-const defaultPasswordHash = bcrypt.hashSync('admin123', 10);
-
-// In-Memory / Global Fallback Store for Serverless Vercel
-const fallbackStore = {
-  projects: [],
-  admins: [
-    {
-      id: 'admin_default',
-      username: 'admin',
-      password_hash: defaultPasswordHash,
-      created_at: new Date().toISOString()
-    }
-  ]
-};
-
-try {
-  const sqlite3 = require('sqlite3').verbose();
-  db = new sqlite3.Database(dbPath, (err) => {
-    if (err) {
-      console.warn('⚠️ SQLite connection error, switching to memory fallback:', err.message);
-      useFallbackDb = true;
-    } else {
-      console.log('⚡ SQLite Database connected at:', dbPath);
-    }
+  return query.replace(/\?/g, () => {
+    index++;
+    return `$${index}`;
   });
-
-  if (db) {
-    db.serialize(() => {
-      db.run(`
-        CREATE TABLE IF NOT EXISTS projects (
-          id TEXT PRIMARY KEY,
-          title TEXT NOT NULL,
-          description TEXT NOT NULL,
-          board_type TEXT NOT NULL,
-          bin_file_path TEXT NOT NULL,
-          file_type TEXT NOT NULL DEFAULT 'bin',
-          binary_data TEXT,
-          created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-        )
-      `, () => {
-        db.run(`ALTER TABLE projects ADD COLUMN binary_data TEXT`, () => {});
-      });
-
-      db.run(`
-        CREATE TABLE IF NOT EXISTS admins (
-          id TEXT PRIMARY KEY,
-          username TEXT UNIQUE NOT NULL,
-          password_hash TEXT NOT NULL,
-          created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-        )
-      `, async (err) => {
-        if (!err) {
-          db.get(`SELECT * FROM admins WHERE username = 'admin'`, [], async (err, row) => {
-            if (!err && !row) {
-              db.run(`INSERT INTO admins (id, username, password_hash) VALUES ('admin_default', 'admin', ?)`, [defaultPasswordHash]);
-            }
-          });
-        }
-      });
-    });
-  }
-} catch (e) {
-  console.warn('⚠️ Native sqlite3 module not available in this environment. Using in-memory store:', e.message);
-  useFallbackDb = true;
 }
 
-// Universal database async wrapper (works with SQLite & Serverless Memory Fallback)
+// Initialize database tables
+async function initializeDatabase() {
+  try {
+    await sql`
+      CREATE TABLE IF NOT EXISTS projects (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        description TEXT NOT NULL,
+        board_type TEXT NOT NULL,
+        bin_file_path TEXT NOT NULL,
+        file_type TEXT NOT NULL DEFAULT 'bin',
+        binary_data TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `;
+
+    await sql`
+      CREATE TABLE IF NOT EXISTS admins (
+        id TEXT PRIMARY KEY,
+        username TEXT UNIQUE NOT NULL,
+        password_hash TEXT NOT NULL,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `;
+
+    // Ensure all columns exist in projects
+    await sql`ALTER TABLE projects ADD COLUMN IF NOT EXISTS id TEXT`;
+    await sql`ALTER TABLE projects ADD COLUMN IF NOT EXISTS title TEXT`;
+    await sql`ALTER TABLE projects ADD COLUMN IF NOT EXISTS description TEXT`;
+    await sql`ALTER TABLE projects ADD COLUMN IF NOT EXISTS board_type TEXT`;
+    await sql`ALTER TABLE projects ADD COLUMN IF NOT EXISTS bin_file_path TEXT`;
+    await sql`ALTER TABLE projects ADD COLUMN IF NOT EXISTS file_type TEXT DEFAULT 'bin'`;
+    await sql`ALTER TABLE projects ADD COLUMN IF NOT EXISTS binary_data TEXT`;
+    await sql`ALTER TABLE projects ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW()`;
+
+    // Ensure all columns exist in admins
+    await sql`ALTER TABLE admins ADD COLUMN IF NOT EXISTS id TEXT`;
+    await sql`ALTER TABLE admins ADD COLUMN IF NOT EXISTS username TEXT`;
+    await sql`ALTER TABLE admins ADD COLUMN IF NOT EXISTS password_hash TEXT`;
+    await sql`ALTER TABLE admins ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW()`;
+    await sql`CREATE UNIQUE INDEX IF NOT EXISTS admins_username_idx ON admins (username)`;
+
+    // Create default admin if it doesn't exist
+    const existingAdmin = await sql`
+      SELECT *
+      FROM admins
+      WHERE username = 'admin'
+      LIMIT 1
+    `;
+
+    if (existingAdmin.length === 0) {
+      const defaultPasswordHash = bcrypt.hashSync('admin123', 10);
+
+      await sql`
+        INSERT INTO admins (
+          id,
+          username,
+          password_hash
+        )
+        VALUES (
+          'admin_default',
+          'admin',
+          ${defaultPasswordHash}
+        )
+      `;
+
+      console.log('✅ Default admin created');
+    }
+
+    console.log('✅ Supabase PostgreSQL database initialized');
+  } catch (error) {
+    console.error('❌ Database initialization error:', error);
+    throw error;
+  }
+}
+
+// Convert SQLite SQL syntax to PostgreSQL where necessary
+function prepareQuery(query) {
+  let prepared = query.trim();
+
+  // SQLite CURRENT_TIMESTAMP works in PostgreSQL,
+  // but DATETIME is not a PostgreSQL type.
+  prepared = prepared.replace(/\bDATETIME\b/gi, 'TIMESTAMPTZ');
+
+  // SQLite uses ? parameters.
+  prepared = convertPlaceholders(prepared);
+
+  return prepared;
+}
+
+// Universal database wrapper
 const dbAsync = {
   async all(query, params = []) {
-    if (!useFallbackDb && db) {
-      return new Promise((resolve, reject) => {
-        db.all(query, params, (err, rows) => {
-          if (err) reject(err);
-          else resolve(rows);
-        });
-      });
-    }
+    const preparedQuery = prepareQuery(query);
 
-    // Fallback handler
-    if (query.includes('projects')) {
-      return fallbackStore.projects.map(p => ({
-        id: p.id,
-        title: p.title,
-        description: p.description,
-        board_type: p.board_type,
-        bin_file_path: p.bin_file_path,
-        file_type: p.file_type,
-        created_at: p.created_at
-      })).sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+    try {
+      const rows = await sql.unsafe(preparedQuery, params);
+      return rows;
+    } catch (error) {
+      console.error('❌ DB all() error:', error);
+      console.error('Query:', query);
+      throw error;
     }
-    if (query.includes('admins')) {
-      return [...fallbackStore.admins];
-    }
-    return [];
   },
 
   async get(query, params = []) {
-    if (!useFallbackDb && db) {
-      return new Promise((resolve, reject) => {
-        db.get(query, params, (err, row) => {
-          if (err) reject(err);
-          else resolve(row);
-        });
-      });
-    }
+    const preparedQuery = prepareQuery(query);
 
-    // Fallback handler
-    if (query.includes('FROM projects WHERE id =')) {
-      return fallbackStore.projects.find(p => p.id === params[0]) || null;
+    try {
+      const rows = await sql.unsafe(preparedQuery, params);
+
+      return rows.length > 0 ? rows[0] : undefined;
+    } catch (error) {
+      console.error('❌ DB get() error:', error);
+      console.error('Query:', query);
+      throw error;
     }
-    if (query.includes('FROM admins WHERE username =')) {
-      return fallbackStore.admins.find(a => a.username === params[0]) || null;
-    }
-    if (query.includes('FROM admins WHERE id =')) {
-      return fallbackStore.admins.find(a => a.id === params[0]) || null;
-    }
-    if (query.includes('COUNT(*)')) {
-      return { count: fallbackStore.projects.length };
-    }
-    return null;
   },
 
   async run(query, params = []) {
-    if (!useFallbackDb && db) {
-      return new Promise((resolve, reject) => {
-        db.run(query, params, function (err) {
-          if (err) reject(err);
-          else resolve({ lastID: this.lastID, changes: this.changes });
-        });
-      });
-    }
+    const preparedQuery = prepareQuery(query);
 
-    // Fallback handler
-    if (query.startsWith('INSERT INTO projects')) {
-      fallbackStore.projects.push({
-        id: params[0],
-        title: params[1],
-        description: params[2],
-        board_type: params[3],
-        bin_file_path: params[4],
-        file_type: params[5],
-        binary_data: params[6] || null,
-        created_at: new Date().toISOString()
-      });
-    } else if (query.startsWith('DELETE FROM projects')) {
-      fallbackStore.projects = fallbackStore.projects.filter(p => p.id !== params[0]);
-    } else if (query.startsWith('UPDATE projects SET')) {
-      const project = fallbackStore.projects.find(p => p.id === params[3]);
-      if (project) {
-        project.title = params[0];
-        project.description = params[1];
-        project.board_type = params[2];
-      }
-    } else if (query.startsWith('UPDATE admins SET password_hash')) {
-      const admin = fallbackStore.admins.find(a => a.id === params[1]);
-      if (admin) admin.password_hash = params[0];
+    try {
+      const result = await sql.unsafe(preparedQuery, params);
+
+      return {
+        lastID: null,
+        changes: result.count || 0
+      };
+    } catch (error) {
+      console.error('❌ DB run() error:', error);
+      console.error('Query:', query);
+      throw error;
     }
-    return { changes: 1 };
   }
 };
 
-module.exports = { db, dbAsync };
+// Initialize database when this module loads
+initializeDatabase().catch((error) => {
+  console.error('❌ Failed to initialize database:', error);
+});
+
+module.exports = {
+  db: sql,
+  dbAsync
+};
